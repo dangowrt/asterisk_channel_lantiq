@@ -957,9 +957,9 @@ static int lantiq_end_dialing(int c)
 
 	ast_log(LOG_DEBUG, "end of dialing\n");
 
-	if (pvt->dial_timer) {
+	if (pvt->dial_timer != -1) {
 		ast_sched_thread_del(sched_thread, pvt->dial_timer);
-		pvt->dial_timer = 0;
+		pvt->dial_timer = -1;
 	}
 
 	if(pvt->owner) {
@@ -1246,7 +1246,7 @@ static int lantiq_event_dial_timeout(const void* data)
 	ast_debug(1, "TAPI: lantiq_event_dial_timeout()\n");
 
 	struct lantiq_pvt *pvt = (struct lantiq_pvt *) data;
-	pvt->dial_timer = 0;
+	pvt->dial_timer = -1;
 
 	if (! pvt->channel_state == ONHOOK) {
 		lantiq_dial(pvt);
@@ -1304,13 +1304,14 @@ static void lantiq_dev_event_digit(int c, char digit)
 			}
 
 			/* setup autodial timer */
-			if (!pvt->dial_timer) {
+			if (pvt->dial_timer == -1) {
 				ast_log(LOG_DEBUG, "setting new timer\n");
 				pvt->dial_timer = ast_sched_thread_add(sched_thread, dev_ctx.interdigit_timeout, lantiq_event_dial_timeout, (const void*) pvt);
 			} else {
+				struct sched_context *sched_context = ast_sched_thread_get_context(sched_thread);
+
 				ast_log(LOG_DEBUG, "replacing timer\n");
-				struct sched_context *sched = ast_sched_thread_get_context(sched_thread);
-				AST_SCHED_REPLACE(pvt->dial_timer, sched, dev_ctx.interdigit_timeout, lantiq_event_dial_timeout, (const void*) pvt);
+				AST_SCHED_REPLACE(pvt->dial_timer, sched_context, dev_ctx.interdigit_timeout, lantiq_event_dial_timeout, (const void*) pvt);
 			}
 			break;
 		default:
@@ -1521,7 +1522,7 @@ static struct lantiq_pvt *lantiq_init_pvt(struct lantiq_pvt *pvt)
 		pvt->port_id = -1;
 		pvt->channel_state = UNKNOWN;
 		pvt->context[0] = '\0';
-		pvt->dial_timer = 0;
+		pvt->dial_timer = -1;
 		pvt->dtmfbuf[0] = '\0';
 		pvt->dtmfbuf_len = 0;
 		pvt->call_setup_start = 0;
