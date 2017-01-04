@@ -348,19 +348,25 @@ static void lantiq_ring(int c, int r, const char *cid, const char *name)
 			if (elements[count].string.len > IFX_TAPI_CID_MSG_LEN_MAX) {
 				elements[count].string.len = IFX_TAPI_CID_MSG_LEN_MAX;
 			}
-			strncpy((char *)elements[count++].string.element, cid, IFX_TAPI_CID_MSG_LEN_MAX);
+			strncpy((char *)elements[count].string.element, cid, IFX_TAPI_CID_MSG_LEN_MAX);
+			elements[count].string.element[IFX_TAPI_CID_MSG_LEN_MAX-1] = '\0';
+			count++;
 
-			elements[count].string.elementType = IFX_TAPI_CID_ST_NAME;
-			elements[count].string.len = strlen(name);
-			if (elements[count].string.len > IFX_TAPI_CID_MSG_LEN_MAX) {
-				elements[count].string.len = IFX_TAPI_CID_MSG_LEN_MAX;
+			if (name) {
+				elements[count].string.elementType = IFX_TAPI_CID_ST_NAME;
+				elements[count].string.len = strlen(name);
+				if (elements[count].string.len > IFX_TAPI_CID_MSG_LEN_MAX) {
+					elements[count].string.len = IFX_TAPI_CID_MSG_LEN_MAX;
+				}
+				strncpy((char *)elements[count].string.element, name, IFX_TAPI_CID_MSG_LEN_MAX);
+				elements[count].string.element[IFX_TAPI_CID_MSG_LEN_MAX-1] = '\0';
+				count++;
 			}
-			strncpy((char *)elements[count++].string.element, name, IFX_TAPI_CID_MSG_LEN_MAX);
 
 			if ((time(&timestamp) != -1) && ((tm=localtime(&timestamp)) != NULL)) {
 				elements[count].date.elementType = IFX_TAPI_CID_ST_DATE;
 				elements[count].date.day = tm->tm_mday;
-				elements[count].date.month = tm->tm_mon;
+				elements[count].date.month = tm->tm_mon + 1;
 				elements[count].date.hour = tm->tm_hour;
 				elements[count].date.mn = tm->tm_min;
 				count++;
@@ -600,7 +606,8 @@ static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
 		const char *name = ast->connected.id.name.valid ? ast->connected.id.name.str : NULL;
 
 		ast_log(LOG_DEBUG, "port %i is ringing\n", pvt->port_id);
-		ast_log(LOG_DEBUG, "port %i CID: %s <%s>\n", pvt->port_id, cid ? cid : "none", name ? name : "");
+		ast_log(LOG_DEBUG, "port %i CID: %s\n", pvt->port_id, cid ? cid : "none");
+		ast_log(LOG_DEBUG, "port %i NAME: %s\n", pvt->port_id, name ? name : "none");
 
 		lantiq_ring(pvt->port_id, 1, cid, name);
 		pvt->channel_state = RINGING;
