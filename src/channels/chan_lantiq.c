@@ -132,8 +132,6 @@ static struct lantiq_pvt {
 	int dtmfbuf_len;                 /* lenght of dtmfbuf                     */
 	int rtp_timestamp;               /* timestamp for RTP packets             */
 	int ptime;			 /* Codec base ptime			  */
-	char rtp_payload;		 /* Internal RTP payload code in use	  */
-	format_t codec;			 /* Asterisk codec in use		  */
 	uint16_t rtp_seqno;              /* Sequence nr for RTP packets           */
 	uint32_t call_setup_start;       /* Start of dialling in ms               */
 	uint32_t call_setup_delay;       /* time between ^ and 1st ring in ms     */
@@ -169,13 +167,15 @@ static struct ast_channel *ast_lantiq_requester(const char *type, format_t forma
 static int ast_lantiq_devicestate(void *data);
 static int acf_channel_read(struct ast_channel *chan, const char *funcname, char *args, char *buf, size_t buflen);
 static void lantiq_jb_get_stats(int c);
+static format_t lantiq_map_rtptype_to_format(uint8_t rtptype);
+static uint8_t lantiq_map_format_to_rtptype(format_t format);
 static int lantiq_conf_enc(int c, format_t formatid);
 static void lantiq_reset_dtmfbuf(struct lantiq_pvt *pvt);
 
 static const struct ast_channel_tech lantiq_tech = {
 	.type = "TAPI",
 	.description = "Lantiq TAPI Telephony API Driver",
-	.capabilities = AST_FORMAT_G729A | AST_FORMAT_ULAW | AST_FORMAT_ALAW | AST_FORMAT_G726 | AST_FORMAT_ILBC | AST_FORMAT_SLINEAR | AST_FORMAT_SLINEAR16 | AST_FORMAT_G722 | AST_FORMAT_SIREN7,
+	.capabilities = AST_FORMAT_ULAW | AST_FORMAT_ALAW | AST_FORMAT_G722 | AST_FORMAT_G726 | AST_FORMAT_SLINEAR,
 	.send_digit_begin = ast_digit_begin,
 	.send_digit_end = ast_digit_end,
 	.call = ast_lantiq_call,
@@ -684,6 +684,63 @@ static struct ast_frame * ast_lantiq_read(struct ast_channel *ast)
 	return NULL;
 }
 
+/* create asterisk format from rtp payload type */
+static format_t lantiq_map_rtptype_to_format(uint8_t rtptype)
+{
+	format_t format = {0};
+
+	switch (rtptype) {
+		case RTP_PCMU: format = AST_FORMAT_ULAW; break;
+		case RTP_PCMA: format = AST_FORMAT_ALAW; break;
+		case RTP_G722: format = AST_FORMAT_G722; break;
+		case RTP_G726: format = AST_FORMAT_G726; break;
+		case RTP_SLIN8: format = AST_FORMAT_SLINEAR; break;
+		case RTP_SLIN16: format = AST_FORMAT_SLINEAR16; break;
+		case RTP_ILBC: format = AST_FORMAT_ILBC; break;
+		case RTP_SIREN7: format = AST_FORMAT_SIREN7; break;
+		case RTP_G723_63: format = AST_FORMAT_G723_1; break;
+		case RTP_G723_53: format = AST_FORMAT_G723_1; break;
+		case RTP_G729: format = AST_FORMAT_G729A; break;
+		default:
+		{
+			ast_log(LOG_ERROR, "unsupported rtptype received is 0x%x, forcing ulaw\n", (unsigned) rtptype);
+			format = AST_FORMAT_ULAW;
+		}
+	}
+
+	return format;
+}
+
+/* create rtp payload type from asterisk format */
+static uint8_t lantiq_map_format_to_rtptype(format_t format)
+{
+	uint8_t rtptype = 0;
+
+	switch (format) {
+		case AST_FORMAT_ULAW: rtptype = RTP_PCMU; break;
+		case AST_FORMAT_ALAW: rtptype = RTP_PCMA; break;
+		case AST_FORMAT_G722: rtptype = RTP_G722; break;
+		case AST_FORMAT_G726: rtptype = RTP_G726; break;
+		case AST_FORMAT_SLINEAR: rtptype = RTP_SLIN8; break;
+		case AST_FORMAT_SLINEAR16: rtptype = RTP_SLIN16; break;
+		case AST_FORMAT_ILBC: rtptype = RTP_ILBC; break;
+		case AST_FORMAT_SIREN7: rtptype = RTP_SIREN7; break;
+#if defined G723_HIGH_RATE
+		case AST_FORMAT_G723_1: rtptype = RTP_G723_63; break;
+#else
+		case AST_FORMAT_G723_1: rtptype = RTP_G723_53; break;
+#endif
+		case AST_FORMAT_G729A: rtptype = RTP_G729; break;
+		default:
+		{
+			ast_log(LOG_ERROR, "unsupported format %s (0x%llx), forcing ulaw\n", ast_getformatname(format), (long long) format);
+			rtptype = RTP_PCMU;
+		}
+	}
+
+	return rtptype;
+}
+
 static int lantiq_conf_enc(int c, format_t formatid)
 {
 	/* Configure encoder before starting RTP session */
@@ -691,13 +748,52 @@ static int lantiq_conf_enc(int c, format_t formatid)
 
 	memset(&enc_cfg, 0, sizeof(IFX_TAPI_ENC_CFG_t));
 	switch (formatid) {
+		case AST_FORMAT_ULAW:
+			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_MLAW;
+			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+			iflist[c].ptime = 10;
+			break;
+		case AST_FORMAT_ALAW:
+			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_ALAW;
+			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+			iflist[c].ptime = 10;
+			break;
+		case AST_FORMAT_G722:
+			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G722_64;
+			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+			iflist[c].ptime = 20;
+			break;
+		case AST_FORMAT_G726:
+			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G726_32;
+			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+			iflist[c].ptime = 10;
+			break;
+		case AST_FORMAT_SLINEAR:
+			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_LIN16_8;
+			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+			iflist[c].ptime = 10;
+			break;
+		case AST_FORMAT_SLINEAR16:
+			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_LIN16_16;
+			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_10;
+			iflist[c].ptime = 10;
+			break;
+		case AST_FORMAT_ILBC:
+			/* iLBC 15.2kbps is currently unsupported by Asterisk */
+			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_ILBC_133;
+			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_30;
+			iflist[c].ptime = 30;
+			break;
+		case AST_FORMAT_SIREN7:
+			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G7221_32;
+			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+			iflist[c].ptime = 20;
+			break;
 		case AST_FORMAT_G723_1:
 #if defined G723_HIGH_RATE
 			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G723_63;
-			iflist[c].rtp_payload = RTP_G723_63;
 #else
 			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G723_53;
-			iflist[c].rtp_payload = RTP_G723_53;
 #endif
 			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_30;
 			iflist[c].ptime = 30;
@@ -706,62 +802,14 @@ static int lantiq_conf_enc(int c, format_t formatid)
 			 enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G729;
 			 enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
 			 iflist[c].ptime = 10;
-			 iflist[c].rtp_payload = RTP_G729;
 			 break;
-		case AST_FORMAT_ULAW:
+		default:
+			ast_log(LOG_ERROR, "unsupported format %s (0x%llx)\n", ast_getformatname(formatid), (long long) formatid);
 			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_MLAW;
 			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
 			iflist[c].ptime = 10;
-			iflist[c].rtp_payload = RTP_PCMU;
-			break;
-		case AST_FORMAT_ALAW:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_ALAW;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			iflist[c].ptime = 10;
-			iflist[c].rtp_payload = RTP_PCMA;
-			break;
-		case AST_FORMAT_G726:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G726_32;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			iflist[c].ptime = 10;
-			iflist[c].rtp_payload = RTP_G726;
-			break;
-		case AST_FORMAT_ILBC:
-			/* iLBC 15.2kbps is currently unsupported by Asterisk */
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_ILBC_133;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_30;
-			iflist[c].ptime = 30;
-			iflist[c].rtp_payload = RTP_ILBC;
-			break;
-		case AST_FORMAT_SLINEAR:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_LIN16_8;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			iflist[c].ptime = 10;
-			iflist[c].rtp_payload = RTP_SLIN8;
-			break;
-		case AST_FORMAT_SLINEAR16:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_LIN16_16;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_10;
-			iflist[c].ptime = 10;
-			iflist[c].rtp_payload = RTP_SLIN16;
-			break;
-		case AST_FORMAT_G722:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G722_64;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			iflist[c].ptime = 20;
-			iflist[c].rtp_payload = RTP_G722;
-			break;
-		case AST_FORMAT_SIREN7:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G7221_32;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			iflist[c].ptime = 20;
-			iflist[c].rtp_payload = RTP_SIREN7;
-			break;
-		default:
-			ast_log(LOG_ERROR, "unsupported format %llu (%s)\n", formatid, ast_getformatname(formatid));
-			return -1;
 	}
-	iflist[c].codec = formatid;
+
 	ast_log(LOG_DEBUG, "Configuring encoder to use TAPI codec type %d (%s) on channel %i\n", enc_cfg.nEncType, ast_getformatname(formatid), c);
 
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_CFG_SET, &enc_cfg)) {
@@ -794,15 +842,13 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 		return 0;
 	}
 
-	if(frame->subclass.codec != pvt->codec) {
-		ast_debug(1, "Received AST voice frame type %llu (%s) but %s was expected.\n", frame->subclass.codec, ast_getformatname(frame->subclass.codec), ast_getformatname(pvt->codec));
-		return 0;
-	}
-
 	if (frame->datalen == 0) {
 		ast_log(LOG_DEBUG, "we've been prodded\n");
 		return 0;
 	}
+
+	/* get rtp payload type */
+	rtptype = lantiq_map_format_to_rtptype(frame->subclass.codec);
 
 	rtp_header->version      = 2;
 	rtp_header->padding      = 0;
@@ -810,7 +856,7 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 	rtp_header->csrc_count   = 0;
 	rtp_header->marker       = 0;
 	rtp_header->ssrc         = 0;
-	rtp_header->payload_type = pvt->rtp_payload;
+	rtp_header->payload_type = rtptype;
 
 	subframes = (iflist[pvt->port_id].ptime + frame->len - 1) / iflist[pvt->port_id].ptime; /* number of subframes in AST frame */
 	if (subframes == 0)
@@ -1009,10 +1055,21 @@ static struct ast_channel *lantiq_channel(int state, int c, char *ext, char *ctx
 	}
 
 	chan->tech = &lantiq_tech;
-	chan->nativeformats = lantiq_tech.capabilities;
 	chan->tech_pvt = pvt;
 	pvt->owner = chan;
 
+	if (!(format & lantiq_tech.capabilities)) { /* no format or unsupported format given */
+		format = ast_best_codec(lantiq_tech.capabilities); /* choose format from capabilities */
+	}
+
+	/* set choosed format */
+	chan->nativeformats = format;
+	chan->readformat = format;
+	chan->writeformat = format;
+	chan->rawreadformat = format;
+	chan->rawwriteformat = format;
+
+	/* configuring encoder */
 	if (format != 0)
 		if (lantiq_conf_enc(c, format) < 0)
 			return NULL;
@@ -1093,6 +1150,7 @@ static int lantiq_dev_data_handler(int c)
 {
 	char buf[BUFSIZ];
 	struct ast_frame frame = {0};
+	format_t format;
 
 	int res = read(dev_ctx.ch_fd[c], buf, sizeof(buf));
 	if (res <= 0) {
@@ -1109,18 +1167,15 @@ static int lantiq_dev_data_handler(int c)
 		return 0;
 	}
 
-	if(rtp->payload_type != pvt->rtp_payload) {
-		if (rtp->payload_type == RTP_CN) {
-			/* TODO: Handle Comfort Noise frames */
-			ast_debug(1, "Dropping Comfort Noise frame\n");
-		}
-		ast_debug(1, "Received RTP payload type %d but %d was expected.\n", rtp->payload_type, pvt->rtp_payload);
-		return 0;
+	if (rtp->payload_type == RTP_CN) {
+		/* TODO: Handle Comfort Noise frames */
+		ast_debug(1, "Dropping Comfort Noise frame\n");
 	}
 
+	format = lantiq_map_rtptype_to_format(rtp->payload_type);
 	frame.src = "TAPI";
 	frame.frametype = AST_FRAME_VOICE;
-	frame.subclass.codec = pvt->codec;
+	frame.subclass.codec = format;
 	frame.datalen = res - RTP_HEADER_LEN;
 	frame.data.ptr = buf + RTP_HEADER_LEN;
 	frame.samples = ast_codec_get_samples(&frame);
@@ -1156,12 +1211,6 @@ static int accept_call(int c)
 	}
 
 	return 0;
-}
-
-static void lantiq_reset_dtmfbuf(struct lantiq_pvt *pvt)
-{
-	pvt->dtmfbuf[0] = '\0';
-	pvt->dtmfbuf_len = 0;
 }
 
 static int lantiq_dev_event_hook(int c, int state)
@@ -1215,6 +1264,12 @@ out:
 	ast_mutex_unlock(&iflock);
 
 	return ret;
+}
+
+static void lantiq_reset_dtmfbuf(struct lantiq_pvt *pvt)
+{
+	pvt->dtmfbuf[0] = '\0';
+	pvt->dtmfbuf_len = 0;
 }
 
 static void lantiq_dial(struct lantiq_pvt *pvt)
