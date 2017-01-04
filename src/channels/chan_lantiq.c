@@ -826,7 +826,13 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 			samples = length * frame->samples / frame->datalen;
 		}
 
-		memcpy(buf + RTP_HEADER_LEN, head, length);
+		if ( frame->datalen <= (sizeof(buf) - RTP_HEADER_LEN) )
+			memcpy(buf + RTP_HEADER_LEN, head, length);
+		else {
+			ast_log(LOG_WARNING, "buffer is too small\n");
+			return -1;
+		}
+
 		head += length;
 		pvt->rtp_timestamp += (rtp_header->payload_type == RTP_G722) ? samples / 2 : samples; /* per RFC3551 */
 
@@ -1084,7 +1090,10 @@ static int lantiq_dev_data_handler(int c)
 	int res = read(dev_ctx.ch_fd[c], buf, sizeof(buf));
 	if (res <= 0) {
 		ast_log(LOG_ERROR, "we got read error %i\n", res);
-		return 0;
+		return -1;
+	} else if (res < RTP_HEADER_LEN) {
+		ast_log(LOG_ERROR, "we got data smaller than header size\n");
+		return -1;
 	}
 
 	rtp_header_t *rtp = (rtp_header_t*) buf;
