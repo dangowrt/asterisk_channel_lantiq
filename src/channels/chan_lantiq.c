@@ -794,6 +794,9 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 	rtp_header->payload_type = pvt->rtp_payload;
 
 	const int subframes = (iflist[pvt->port_id].ptime + frame->len - 1) / iflist[pvt->port_id].ptime; /* number of subframes in AST frame */
+	if (subframes == 0)
+		subframes = 1;
+
 	const int subframes_rtp = (RTP_BUFFER_LEN - RTP_HEADER_LEN) * subframes / frame->datalen; /* how many frames fit in a single RTP packet */
 
 	/* By default stick to the maximum multiple of native frame length */
