@@ -8,6 +8,9 @@
 ; Number of FXS ports (default: 2)
 channels = 2
 ;
+; Create contexts per channel (default: off)
+;per_channel_context = off
+;
 ; Set tapi firmware file path
 ;firmwarefilename = /lib/firmware/danube_firmware.bin
 ;
