@@ -9,6 +9,7 @@
  * Copyright (C) 2012, Mirko Vogt for T-Labs
  *                     (Deutsche Telekom Innovation Laboratories)
  * Copyright (c) 2015, Antonio Eugenio Burriel
+ * Copyright (C) 2017, Stefan Koch
  *
  * Luka Perkov <openwrt@lukaperkov.net>
  * John Crispin <blogic@openwrt.org>
@@ -16,6 +17,7 @@
  * Kaspar Schleiser <kaspar@schleiser.de>
  * Mirko Vogt <mirko@openwrt.org>
  * Antonio Eugenio Burriel <aeburriel@gmail.com>
+ * Stefan Koch <stefan.koch10@gmail.com>
  *
  * See http://www.asterisk.org for more information about
  * the Asterisk project. Please do not directly contact
@@ -38,6 +40,7 @@
  * \author Kaspar Schleiser <kaspar@schleiser.de>
  * \author Mirko Vogt <mirko@openwrt.org>
  * \author Antonio Eugenio Burriel <aeburriel@gmail.com>
+ * \author Stefan Koch <stefan.koch10@gmail.com>
  * 
  * \ingroup channel_drivers
  */
@@ -52,6 +55,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <signal.h>
 #include <stdio.h>
 #ifdef HAVE_LINUX_COMPILER_H
@@ -524,9 +528,9 @@ static const char *control_string(int c)
 
 static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen)
 {
-	ast_verb(3, "phone indication \"%s\"\n", control_string(condition));
-
 	struct lantiq_pvt *pvt = chan->tech_pvt;
+
+	ast_verb(3, "phone indication \"%s\"\n", control_string(condition));
 
 	switch (condition) {
 		case -1:
@@ -581,18 +585,19 @@ static int ast_digit_end(struct ast_channel *ast, char digit, unsigned int durat
 static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
 {
 	int res = 0;
+	struct lantiq_pvt *pvt;
 
 	/* lock to prevent simultaneous access with do_monitor thread processing */
 	ast_mutex_lock(&iflock);
 
-	struct lantiq_pvt *pvt = ast->tech_pvt;
+	pvt = ast->tech_pvt;
 	ast_log(LOG_DEBUG, "state: %s\n", state_string(pvt->channel_state));
 
 	if (pvt->channel_state == ONHOOK) {
-		ast_log(LOG_DEBUG, "port %i is ringing\n", pvt->port_id);
-
 		const char *cid = ast->connected.id.number.valid ? ast->connected.id.number.str : NULL;
 		const char *name = ast->connected.id.name.valid ? ast->connected.id.name.str : NULL;
+
+		ast_log(LOG_DEBUG, "port %i is ringing\n", pvt->port_id);
 		ast_log(LOG_DEBUG, "port %i CID: %s <%s>\n", pvt->port_id, cid ? cid : "none", name ? name : "");
 
 		lantiq_ring(pvt->port_id, 1, cid, name);
@@ -614,15 +619,16 @@ static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
 
 static int ast_lantiq_hangup(struct ast_channel *ast)
 {
+	struct lantiq_pvt *pvt;
+
 	/* lock to prevent simultaneous access with do_monitor thread processing */
 	ast_mutex_lock(&iflock);
 
-	struct lantiq_pvt *pvt = ast->tech_pvt;
+	pvt = ast->tech_pvt;
 	ast_log(LOG_DEBUG, "state: %s\n", state_string(pvt->channel_state));
-	
+
 	if (ast->_state == AST_STATE_RINGING) {
-		// FIXME
-		ast_debug(1, "TAPI: ast_lantiq_hangup(): ast->_state == AST_STATE_RINGING\n");
+		ast_debug(1, "channel state is RINGING\n");
 	}
 
 	switch (pvt->channel_state) {
@@ -651,13 +657,15 @@ static int ast_lantiq_hangup(struct ast_channel *ast)
 
 static int ast_lantiq_answer(struct ast_channel *ast)
 {
-	ast_log(LOG_DEBUG, "Remote end has answered call.\n");
 	struct lantiq_pvt *pvt = ast->tech_pvt;
+
+	ast_log(LOG_DEBUG, "Remote end has answered call.\n");
 
 	if (lantiq_conf_enc(pvt->port_id, ast->writeformat))
 		return -1;
 
 	pvt->call_answer = epoch();
+
 	return 0;
 }
 
@@ -762,13 +770,15 @@ static int lantiq_conf_enc(int c, format_t formatid)
 	return 0;
 }
 
-
 static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 {
 	char buf[RTP_BUFFER_LEN];
 	rtp_header_t *rtp_header = (rtp_header_t *) buf;
 	struct lantiq_pvt *pvt = ast->tech_pvt;
 	int ret;
+	uint8_t rtptype;
+	int subframes, subframes_rtp, length, samples;
+	char *head, *tail;
 
 	if(frame->frametype != AST_FRAME_VOICE) {
 		ast_log(LOG_DEBUG, "unhandled frame type\n");
@@ -793,18 +803,18 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 	rtp_header->ssrc         = 0;
 	rtp_header->payload_type = pvt->rtp_payload;
 
-	const int subframes = (iflist[pvt->port_id].ptime + frame->len - 1) / iflist[pvt->port_id].ptime; /* number of subframes in AST frame */
+	subframes = (iflist[pvt->port_id].ptime + frame->len - 1) / iflist[pvt->port_id].ptime; /* number of subframes in AST frame */
 	if (subframes == 0)
 		subframes = 1;
 
-	const int subframes_rtp = (RTP_BUFFER_LEN - RTP_HEADER_LEN) * subframes / frame->datalen; /* how many frames fit in a single RTP packet */
+	subframes_rtp = (RTP_BUFFER_LEN - RTP_HEADER_LEN) * subframes / frame->datalen; /* how many frames fit in a single RTP packet */
 
 	/* By default stick to the maximum multiple of native frame length */
-	int length = subframes_rtp * frame->datalen / subframes;
-	int samples = length * frame->samples / frame->datalen;
+	length = subframes_rtp * frame->datalen / subframes;
+	samples = length * frame->samples / frame->datalen;
 
-	char *head = frame->data.ptr;
-	const char *tail = frame->data.ptr + frame->datalen;
+	head = frame->data.ptr;
+	tail = frame->data.ptr + frame->datalen;
 	while (head < tail) {
 		rtp_header->seqno        = pvt->rtp_seqno++;
 		rtp_header->timestamp    = pvt->rtp_timestamp;
@@ -827,21 +837,6 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 			ast_log(LOG_WARNING, "Short TAPI write of %d bytes, expected %d bytes\n", ret, RTP_HEADER_LEN + length);
 			continue;
 		}
-
-#ifdef TODO_DEVEL_INFO
-		ast_debug(1, "ast_lantiq_write(): size: %i version: %i padding: %i extension: %i csrc_count: %i\n"
-			 "marker: %i payload_type: %s seqno: %i timestamp: %i ssrc: %i\n",
-				 (int)ret,
-				 (int)rtp_header->version,
-				 (int)rtp_header->padding,
-				 (int)rtp_header->extension,
-				 (int)rtp_header->csrc_count,
-				 (int)rtp_header->marker,
-				 ast_codec2str(frame->subclass.codec),
-				 (int)rtp_header->seqno,
-				 (int)rtp_header->timestamp,
-				 (int)rtp_header->ssrc);
-#endif
 	}
 
 	return 0;
@@ -895,7 +890,6 @@ static int acf_channel_read(struct ast_channel *chan, const char *funcname, char
 
 	return res;
 }
-
 
 static struct ast_frame * ast_lantiq_exception(struct ast_channel *ast)
 {
@@ -957,8 +951,9 @@ static int lantiq_standby(int c)
 
 static int lantiq_end_dialing(int c)
 {
-	ast_log(LOG_DEBUG, "TODO - DEBUG MSG\n");
 	struct lantiq_pvt *pvt = &iflist[c];
+
+	ast_log(LOG_DEBUG, "end of dialing\n");
 
 	if (pvt->dial_timer) {
 		ast_sched_thread_del(sched_thread, pvt->dial_timer);
@@ -975,9 +970,9 @@ static int lantiq_end_dialing(int c)
 
 static int lantiq_end_call(int c)
 {
-	ast_log(LOG_DEBUG, "TODO - DEBUG MSG\n");
-
 	struct lantiq_pvt *pvt = &iflist[c];
+
+	ast_log(LOG_DEBUG, "end of call\n");
 	
 	if(pvt->owner) {
 		lantiq_jb_get_stats(c);
@@ -987,29 +982,20 @@ static int lantiq_end_call(int c)
 	return 0;
 }
 
-static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ctx, format_t format)
+static struct ast_channel *lantiq_channel(int state, int c, char *ext, char *ctx, format_t format)
 {
 	struct ast_channel *chan = NULL;
 	struct lantiq_pvt *pvt = &iflist[c];
 
 	chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx, 0, c, "TAPI/%d", (c + 1));
-	if (! chan) {
+	if (!chan) {
 		ast_log(LOG_DEBUG, "Cannot allocate channel!\n");
 		return NULL;
 	}
-/*
-	char buf[BUFSIZ];
-	if (format != 0 && ! (format & lantiq_tech.capabilities)) {
-		ast_log(LOG_WARNING, "Requested channel with unsupported format %s. Forcing ALAW.\n", ast_getformatname_multiple(buf, sizeof(buf), format));
-		format = AST_FORMAT_ALAW;
-	} else {
-		format = lantiq_tech.capabilities;
-	}
-*/
+
 	chan->tech = &lantiq_tech;
 	chan->nativeformats = lantiq_tech.capabilities;
 	chan->tech_pvt = pvt;
-
 	pvt->owner = chan;
 
 	if (format != 0)
@@ -1019,16 +1005,15 @@ static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ct
 	return chan;
 }
 
-static struct ast_channel * ast_lantiq_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause)
+static struct ast_channel *ast_lantiq_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause)
 {
-	ast_mutex_lock(&iflock);
-
 	char buf[BUFSIZ];
 	struct ast_channel *chan = NULL;
 	int port_id = -1;
 
-	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_getformatname_multiple(buf, sizeof(buf), format));
+	ast_mutex_lock(&iflock);
 
+	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_getformatname_multiple(buf, sizeof(buf), format));
 
 	/* check for correct data argument */
 	if (ast_strlen_zero(data)) {
@@ -1040,7 +1025,7 @@ static struct ast_channel * ast_lantiq_requester(const char *type, format_t form
 	/* get our port number */
 	port_id = atoi((char*) data);
 	if (port_id < 1 || port_id > dev_ctx.channels) {
-		ast_log(LOG_ERROR, "Unknown channel ID: \"%s\"\n", (char*) data);
+		ast_log(LOG_ERROR, "Unknown channel ID: \"%s\"\n", (const char*) data);
 		*cause = AST_CAUSE_CHANNEL_UNACCEPTABLE;
 		goto bailout;
 	}
@@ -1126,27 +1111,14 @@ static int lantiq_dev_data_handler(int c)
 		ast_channel_unlock(pvt->owner);
 	}
 
-/*	ast_debug(1, "lantiq_dev_data_handler(): size: %i version: %i padding: %i extension: %i csrc_count: %i \n"
-				 "marker: %i payload_type: %s seqno: %i timestamp: %i ssrc: %i\n", 
-				 (int)res,
-				 (int)rtp->version,
-				 (int)rtp->padding,
-				 (int)rtp->extension,
-				 (int)rtp->csrc_count,
-				 (int)rtp->marker,
-				 ast_codec2str(frame.subclass.codec),
-				 (int)rtp->seqno,
-				 (int)rtp->timestamp,
-				 (int)rtp->ssrc);
-*/
 	return 0;
 }
 
 static int accept_call(int c)
-{ 
-	ast_log(LOG_DEBUG, "TODO - DEBUG MSG\n");
-
+{
 	struct lantiq_pvt *pvt = &iflist[c];
+
+	ast_log(LOG_DEBUG, "accept call\n");
 
 	if (pvt->owner) {
 		struct ast_channel *chan = pvt->owner;
@@ -1924,7 +1896,7 @@ static int load_module(void)
 		tone.simple.pause = 0;
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
-			return AST_MODULE_LOAD_FAILURE;
+			goto load_error_st;
 		}
 
 		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
@@ -1940,7 +1912,7 @@ static int load_module(void)
 		tone.simple.pause = 0;
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
-			return AST_MODULE_LOAD_FAILURE;
+			goto load_error_st;
 		}
 
 		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
@@ -1956,7 +1928,7 @@ static int load_module(void)
 		tone.simple.pause = 0;
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
-			return AST_MODULE_LOAD_FAILURE;
+			goto load_error_st;
 		}
 
 		/* ringing type */
