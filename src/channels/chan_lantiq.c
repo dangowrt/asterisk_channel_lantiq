@@ -76,6 +76,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #include <asterisk/sched.h>
 #include <asterisk/cli.h>
 #include <asterisk/devicestate.h>
+#include <asterisk/format_cache.h>
 
 /* Lantiq TAPI includes */
 #include <drv_tapi/drv_tapi_io.h>
@@ -163,11 +164,11 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame);
 static struct ast_frame *ast_lantiq_exception(struct ast_channel *ast);
 static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen);
 static int ast_lantiq_fixup(struct ast_channel *old, struct ast_channel *new);
-static struct ast_channel *ast_lantiq_requester(const char *type, struct ast_format_cap *cap, const struct ast_channel *requestor, const char *data, int *cause);
+static struct ast_channel *ast_lantiq_requester(const char *type, struct ast_format_cap *cap, const struct ast_assigned_ids *assigned_ids, const struct ast_channel *requestor, const char *data, int *cause);
 static int ast_lantiq_devicestate(const char *data);
 static int acf_channel_read(struct ast_channel *chan, const char *funcname, char *args, char *buf, size_t buflen);
 static void lantiq_jb_get_stats(int c);
-static struct ast_format lantiq_map_rtptype_to_format(uint8_t rtptype);
+static struct ast_format *lantiq_map_rtptype_to_format(uint8_t rtptype);
 static uint8_t lantiq_map_format_to_rtptype(const struct ast_format *format);
 static int lantiq_conf_enc(int c, const struct ast_format *format);
 static void lantiq_reset_dtmfbuf(struct lantiq_pvt *pvt);
@@ -685,26 +686,26 @@ static struct ast_frame * ast_lantiq_read(struct ast_channel *ast)
 }
 
 /* create asterisk format from rtp payload type */
-static struct ast_format lantiq_map_rtptype_to_format(uint8_t rtptype)
+static struct ast_format *lantiq_map_rtptype_to_format(uint8_t rtptype)
 {
-	struct ast_format format = {0};
+	struct ast_format *format = NULL;
 
 	switch (rtptype) {
-		case RTP_PCMU: ast_format_set(&format, AST_FORMAT_ULAW, 0); break;
-		case RTP_PCMA: ast_format_set(&format, AST_FORMAT_ALAW, 0); break;
-		case RTP_G722: ast_format_set(&format, AST_FORMAT_G722, 0); break;
-		case RTP_G726: ast_format_set(&format, AST_FORMAT_G726, 0); break;
-		case RTP_SLIN8: ast_format_set(&format, AST_FORMAT_SLINEAR, 0); break;
-		case RTP_SLIN16: ast_format_set(&format, AST_FORMAT_SLINEAR16, 0); break;
-		case RTP_ILBC: ast_format_set(&format, AST_FORMAT_ILBC, 0); break;
-		case RTP_SIREN7: ast_format_set(&format, AST_FORMAT_SIREN7, 0); break;
-		case RTP_G723_63: ast_format_set(&format, AST_FORMAT_G723_1, 0); break;
-		case RTP_G723_53: ast_format_set(&format, AST_FORMAT_G723_1, 0); break;
-		case RTP_G729: ast_format_set(&format, AST_FORMAT_G729A, 0); break;
+		case RTP_PCMU: format = ast_format_ulaw; break;
+		case RTP_PCMA: format = ast_format_alaw; break;
+		case RTP_G722: format = ast_format_g722; break;
+		case RTP_G726: format = ast_format_g726; break;
+		case RTP_SLIN8: format = ast_format_slin; break;
+		case RTP_SLIN16: format = ast_format_slin16; break;
+		case RTP_ILBC: format = ast_format_ilbc; break;
+		case RTP_SIREN7: format = ast_format_siren7; break;
+		case RTP_G723_63: format = ast_format_g723; break;
+		case RTP_G723_53: format = ast_format_g723; break;
+		case RTP_G729: format = ast_format_g729; break;
 		default:
 		{
 			ast_log(LOG_ERROR, "unsupported rtptype received is 0x%x, forcing ulaw\n", (unsigned) rtptype);
-			ast_format_set(&format, AST_FORMAT_ULAW, 0);
+			format = ast_format_ulaw;
 		}
 	}
 
@@ -715,28 +716,34 @@ static struct ast_format lantiq_map_rtptype_to_format(uint8_t rtptype)
 static uint8_t lantiq_map_format_to_rtptype(const struct ast_format *format)
 {
 	uint8_t rtptype = 0;
-	enum ast_format_id formatid = format ? format->id : 0;
 
-	switch (formatid) {
-		case AST_FORMAT_ULAW: rtptype = RTP_PCMU; break;
-		case AST_FORMAT_ALAW: rtptype = RTP_PCMA; break;
-		case AST_FORMAT_G722: rtptype = RTP_G722; break;
-		case AST_FORMAT_G726: rtptype = RTP_G726; break;
-		case AST_FORMAT_SLINEAR: rtptype = RTP_SLIN8; break;
-		case AST_FORMAT_SLINEAR16: rtptype = RTP_SLIN16; break;
-		case AST_FORMAT_ILBC: rtptype = RTP_ILBC; break;
-		case AST_FORMAT_SIREN7: rtptype = RTP_SIREN7; break;
+	if (ast_format_cmp(format, ast_format_ulaw) == AST_FORMAT_CMP_EQUAL)
+		rtptype = RTP_PCMU;
+	else if (ast_format_cmp(format, ast_format_alaw) == AST_FORMAT_CMP_EQUAL)
+		rtptype = RTP_PCMA;
+	else if (ast_format_cmp(format, ast_format_g722) == AST_FORMAT_CMP_EQUAL)
+		rtptype = RTP_G722;
+	else if (ast_format_cmp(format, ast_format_g726) == AST_FORMAT_CMP_EQUAL)
+		rtptype = RTP_G726;
+	else if (ast_format_cmp(format, ast_format_slin) == AST_FORMAT_CMP_EQUAL)
+		rtptype = RTP_SLIN8;
+	else if (ast_format_cmp(format, ast_format_slin16) == AST_FORMAT_CMP_EQUAL)
+		rtptype = RTP_SLIN16;
+	else if (ast_format_cmp(format, ast_format_ilbc) == AST_FORMAT_CMP_EQUAL)
+		rtptype = RTP_ILBC;
+	else if (ast_format_cmp(format, ast_format_siren7) == AST_FORMAT_CMP_EQUAL)
+		rtptype = RTP_SIREN7;
+	else if (ast_format_cmp(format, ast_format_g723) == AST_FORMAT_CMP_EQUAL)
 #if defined G723_HIGH_RATE
-		case AST_FORMAT_G723_1: rtptype = RTP_G723_63; break;
+		rtptype = RTP_G723_63;
 #else
-		case AST_FORMAT_G723_1: rtptype = RTP_G723_53; break;
+		rtptype = RTP_G723_53;
 #endif
-		case AST_FORMAT_G729A: rtptype = RTP_G729; break;
-		default:
-		{
-			ast_log(LOG_ERROR, "unsupported format %s (0x%x), forcing ulaw\n", ast_getformatname(format), (int) formatid);
-			rtptype = RTP_PCMU;
-		}
+	else if (ast_format_cmp(format, ast_format_g729) == AST_FORMAT_CMP_EQUAL)
+		rtptype = RTP_G729;
+	else {
+		ast_log(LOG_ERROR, "unsupported format %s, forcing ulaw\n", ast_format_get_name(format));
+		rtptype = RTP_PCMU;
 	}
 
 	return rtptype;
@@ -746,73 +753,62 @@ static int lantiq_conf_enc(int c, const struct ast_format *format)
 {
 	/* Configure encoder before starting RTP session */
 	IFX_TAPI_ENC_CFG_t enc_cfg;
-	enum ast_format_id formatid = format ? format->id : 0;
 
 	memset(&enc_cfg, 0, sizeof(IFX_TAPI_ENC_CFG_t));
-	switch (formatid) {
-		case AST_FORMAT_ULAW:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_MLAW;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			iflist[c].ptime = 10;
-			break;
-		case AST_FORMAT_ALAW:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_ALAW;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			iflist[c].ptime = 10;
-			break;
-		case AST_FORMAT_G722:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G722_64;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			iflist[c].ptime = 20;
-			break;
-		case AST_FORMAT_G726:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G726_32;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			iflist[c].ptime = 10;
-			break;
-		case AST_FORMAT_SLINEAR:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_LIN16_8;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			iflist[c].ptime = 10;
-			break;
-		case AST_FORMAT_SLINEAR16:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_LIN16_16;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_10;
-			iflist[c].ptime = 10;
-			break;
-		case AST_FORMAT_ILBC:
-			/* iLBC 15.2kbps is currently unsupported by Asterisk */
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_ILBC_133;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_30;
-			iflist[c].ptime = 30;
-			break;
-		case AST_FORMAT_SIREN7:
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G7221_32;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			iflist[c].ptime = 20;
-			break;
-		case AST_FORMAT_G723_1:
+
+	if (ast_format_cmp(format, ast_format_ulaw) == AST_FORMAT_CMP_EQUAL) {
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_MLAW;
+		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+		iflist[c].ptime = 10;
+	} else if (ast_format_cmp(format, ast_format_alaw) == AST_FORMAT_CMP_EQUAL) {
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_ALAW;
+		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+		iflist[c].ptime = 10;
+	} else if (ast_format_cmp(format, ast_format_g722) == AST_FORMAT_CMP_EQUAL) {
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G722_64;
+		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+		iflist[c].ptime = 20;
+	} else if (ast_format_cmp(format, ast_format_g726) == AST_FORMAT_CMP_EQUAL) {
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G726_32;
+		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+		iflist[c].ptime = 10;
+	} else if (ast_format_cmp(format, ast_format_slin) == AST_FORMAT_CMP_EQUAL) {
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_LIN16_8;
+		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+		iflist[c].ptime = 10;
+	} else if (ast_format_cmp(format, ast_format_slin16) == AST_FORMAT_CMP_EQUAL) {
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_LIN16_16;
+		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_10;
+		iflist[c].ptime = 10;
+	} else if (ast_format_cmp(format, ast_format_ilbc) == AST_FORMAT_CMP_EQUAL) {
+		/* iLBC 15.2kbps is currently unsupported by Asterisk */
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_ILBC_133;
+		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_30;
+		iflist[c].ptime = 30;
+	} else if (ast_format_cmp(format, ast_format_siren7) == AST_FORMAT_CMP_EQUAL) {
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G7221_32;
+		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+		iflist[c].ptime = 20;
+	} else if (ast_format_cmp(format, ast_format_g723) == AST_FORMAT_CMP_EQUAL) {
 #if defined G723_HIGH_RATE
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G723_63;
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G723_63;
 #else
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G723_53;
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G723_53;
 #endif
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_30;
-			iflist[c].ptime = 30;
-			break;
-		case AST_FORMAT_G729A:
-			 enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G729;
-			 enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			 iflist[c].ptime = 10;
-			 break;
-		default:
-			ast_log(LOG_ERROR, "unsupported format %s (0x%x)\n", ast_getformatname(format), (int) formatid);
-			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_MLAW;
-			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-			iflist[c].ptime = 10;
+		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_30;
+		iflist[c].ptime = 30;
+	} else if (ast_format_cmp(format, ast_format_g729) == AST_FORMAT_CMP_EQUAL) {
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_G729;
+		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+		iflist[c].ptime = 10;
+	} else {
+		ast_log(LOG_ERROR, "unsupported format %s, forcing ulaw\n", ast_format_get_name(format));
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_MLAW;
+		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+		iflist[c].ptime = 10;
 	}
 
-	ast_log(LOG_DEBUG, "Configuring encoder to use TAPI codec type %d (%s) on channel %i\n", enc_cfg.nEncType, ast_getformatname(format), c);
+	ast_log(LOG_DEBUG, "Configuring encoder to use TAPI codec type %d (%s) on channel %i\n", enc_cfg.nEncType, ast_format_get_name(format), c);
 
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_CFG_SET, &enc_cfg)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_ENC_CFG_SET %d failed\n", c);
@@ -850,7 +846,7 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 	}
 
 	/* get rtp payload type */
-	rtptype = lantiq_map_format_to_rtptype(&frame->subclass.format);
+	rtptype = lantiq_map_format_to_rtptype(frame->subclass.format);
 
 	rtp_header->version      = 2;
 	rtp_header->padding      = 0;
@@ -1045,22 +1041,24 @@ static int lantiq_end_call(int c)
 	return 0;
 }
 
-static struct ast_channel *lantiq_channel(int state, int c, char *ext, char *ctx, struct ast_format_cap *cap)
+static struct ast_channel *lantiq_channel(int state, int c, char *ext, char *ctx, struct ast_format_cap *cap, const struct ast_assigned_ids *assigned_ids, const struct ast_channel *requestor)
 {
 	struct ast_channel *chan = NULL;
 	struct lantiq_pvt *pvt = &iflist[c];
-	struct ast_format format = {0};
-	struct ast_format_cap *newcap = ast_format_cap_alloc();
+	struct ast_format *format = NULL;
+	struct ast_format_cap *newcap = ast_format_cap_alloc(AST_FORMAT_CAP_FLAG_DEFAULT);
+	struct ast_format_cap *formatcap = ast_format_cap_alloc(AST_FORMAT_CAP_FLAG_DEFAULT);
 
-	if (!newcap) {
+	if (!newcap || !formatcap) {
 		ast_log(LOG_DEBUG, "Cannot allocate format capabilities!\n");
 		return NULL;
 	}
 
-	chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx, 0, c, "TAPI/%d", (c + 1));
+	chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx, assigned_ids, requestor, c, "TAPI/%d", (c + 1));
 	if (!chan) {
 		ast_log(LOG_DEBUG, "Cannot allocate channel!\n");
-		ast_format_cap_destroy(newcap);
+		ao2_ref(newcap, -1);
+		ao2_ref(formatcap, -1);
 		return NULL;
 	}
 
@@ -1068,39 +1066,41 @@ static struct ast_channel *lantiq_channel(int state, int c, char *ext, char *ctx
 	ast_channel_tech_pvt_set(chan, pvt);
 	pvt->owner = chan;
 
-	if (cap && ast_format_cap_has_joint(cap, lantiq_tech.capabilities)) { /* compatible format capabilities given */
-		ast_format_cap_joint_copy(lantiq_tech.capabilities, cap, newcap);
-		ast_best_codec(newcap, &format); /* choose format */
+	if (cap && ast_format_cap_iscompatible(cap, lantiq_tech.capabilities)) { /* compatible format capabilities given */
+		ast_format_cap_get_compatible(lantiq_tech.capabilities, cap, newcap);
+		format = ast_format_cap_get_format(newcap, 0); /* choose format */
 	} else { /* no or unsupported format capabilities given */
-		ast_best_codec(lantiq_tech.capabilities, &format); /* choose format from capabilities */
+		format = ast_format_cap_get_format(lantiq_tech.capabilities, 0); /* choose format from capabilities */
 	}
 
 	/* set choosed format */
-	ast_format_cap_set(ast_channel_nativeformats(chan), &format);
-	ast_format_copy(ast_channel_readformat(chan), &format);
-	ast_format_copy(ast_channel_writeformat(chan), &format);
-	ast_format_copy(ast_channel_rawreadformat(chan), &format);
-	ast_format_copy(ast_channel_rawwriteformat(chan), &format);
+	ast_format_cap_append(formatcap, format, 0);
+	ast_channel_nativeformats_set(chan, formatcap);
+	ast_channel_set_readformat(chan, format);
+	ast_channel_set_writeformat(chan, format);
+	ast_channel_set_rawreadformat(chan, format);
+	ast_channel_set_rawwriteformat(chan, format);
 
-	ast_format_cap_destroy(newcap);
+	ao2_ref(newcap, -1);
+	ao2_ref(formatcap, -1);
 
 	/* configuring encoder */
-	if (format.id != 0)
-		if (lantiq_conf_enc(c, &format) < 0)
+	if (format != 0)
+		if (lantiq_conf_enc(c, format) < 0)
 			return NULL;
 
 	return chan;
 }
 
-static struct ast_channel *ast_lantiq_requester(const char *type, struct ast_format_cap *cap, const struct ast_channel *requestor, const char *data, int *cause)
+static struct ast_channel *ast_lantiq_requester(const char *type, struct ast_format_cap *cap, const struct ast_assigned_ids *assigned_ids, const struct ast_channel *requestor, const char *data, int *cause)
 {
-	char buf[BUFSIZ];
+	struct ast_str *buf = ast_str_alloca(64);
 	struct ast_channel *chan = NULL;
 	int port_id = -1;
 
 	ast_mutex_lock(&iflock);
 
-	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_getformatname_multiple(buf, sizeof(buf), cap));
+	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_format_cap_get_names(cap, &buf));
 
 	/* check for correct data argument */
 	if (ast_strlen_zero(data)) {
@@ -1129,8 +1129,8 @@ static struct ast_channel *ast_lantiq_requester(const char *type, struct ast_for
 	if (! pvt->channel_state == ONHOOK) {
 		ast_debug(1, "TAPI channel %i alread in use.\n", port_id+1);
 	} else {
-		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, cap);
-		ast_channel_unlock(chan);
+		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, cap, assigned_ids, requestor);
+		ast_channel_unlock(chan);  /* it's essential to unlock channel */
 	}
 
 bailout:
@@ -1165,7 +1165,7 @@ static int lantiq_dev_data_handler(int c)
 {
 	char buf[BUFSIZ];
 	struct ast_frame frame = {0};
-	struct ast_format format = {0};
+	struct ast_format *format = NULL;
 
 	int res = read(dev_ctx.ch_fd[c], buf, sizeof(buf));
 	if (res <= 0) {
@@ -1190,10 +1190,10 @@ static int lantiq_dev_data_handler(int c)
 	format = lantiq_map_rtptype_to_format(rtp->payload_type);
 	frame.src = "TAPI";
 	frame.frametype = AST_FRAME_VOICE;
-	ast_format_copy(&frame.subclass.format, &format);
+	frame.subclass.format = format;
 	frame.datalen = res - RTP_HEADER_LEN;
 	frame.data.ptr = buf + RTP_HEADER_LEN;
-	frame.samples = ast_codec_get_samples(&frame);
+	frame.samples = ast_codec_samples_count(&frame);
 
 	if(!ast_channel_trylock(pvt->owner)) {
 		ast_queue_frame(pvt->owner, &frame);
@@ -1299,7 +1299,7 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 
 		ast_verbose(VERBOSE_PREFIX_3 " extension exists, starting PBX %s\n", pvt->dtmfbuf);
 
-		chan = lantiq_channel(AST_STATE_UP, pvt->port_id, pvt->dtmfbuf, pvt->context, NULL);
+		chan = lantiq_channel(AST_STATE_UP, pvt->port_id, pvt->dtmfbuf, pvt->context, NULL, 0, NULL);
 		if (!chan) {
 			ast_log(LOG_ERROR, "couldn't create channel\n");
 			goto bailout;
@@ -1318,7 +1318,7 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 			ast_hangup(chan);
 		}
 
-		ast_channel_unlock(chan);
+		ast_channel_unlock(chan); /* it's essential to unlock channel */
 	} else {
 		ast_log(LOG_DEBUG, "no extension found\n");
 		lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_CONGESTION_CODE);
@@ -1704,19 +1704,18 @@ static int load_module(void)
 	dev_ctx.interdigit_timeout = DEFAULT_INTERDIGIT_TIMEOUT;
 	struct ast_flags config_flags = { 0 };
 	int c;
-	struct ast_format format;
 
-	if(!(lantiq_tech.capabilities = ast_format_cap_alloc())) {
+	if(!(lantiq_tech.capabilities = ast_format_cap_alloc(AST_FORMAT_CAP_FLAG_DEFAULT))) {
 	  ast_log(LOG_ERROR, "Unable to allocate format capabilities.\n");
 	  return AST_MODULE_LOAD_DECLINE;
 	}
 
 	/* channel format capabilities */
-	ast_format_cap_add(lantiq_tech.capabilities, ast_format_set(&format, AST_FORMAT_ULAW, 0));
-	ast_format_cap_add(lantiq_tech.capabilities, ast_format_set(&format, AST_FORMAT_ALAW, 0));
-	ast_format_cap_add(lantiq_tech.capabilities, ast_format_set(&format, AST_FORMAT_G722, 0));
-	ast_format_cap_add(lantiq_tech.capabilities, ast_format_set(&format, AST_FORMAT_G726, 0));
-	ast_format_cap_add(lantiq_tech.capabilities, ast_format_set(&format, AST_FORMAT_SLINEAR, 0));
+	ast_format_cap_append(lantiq_tech.capabilities, ast_format_ulaw, 0);
+	ast_format_cap_append(lantiq_tech.capabilities, ast_format_alaw, 0);
+	ast_format_cap_append(lantiq_tech.capabilities, ast_format_g722, 0);
+	ast_format_cap_append(lantiq_tech.capabilities, ast_format_g726, 0);
+	ast_format_cap_append(lantiq_tech.capabilities, ast_format_slin, 0);
 
 	/* Turn off the LEDs, just in case */
 	led_off(dev_ctx.voip_led);
