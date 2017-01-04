@@ -1045,6 +1045,7 @@ static struct ast_channel *ast_lantiq_requester(const char *type, format_t forma
 		ast_debug(1, "TAPI channel %i alread in use.\n", port_id+1);
 	} else {
 		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, format);
+		ast_channel_unlock(chan);
 	}
 
 bailout:
@@ -1230,6 +1231,8 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 			ast_log(LOG_WARNING, " unable to start PBX on %s\n", chan->name);
 			ast_hangup(chan);
 		}
+
+		ast_channel_unlock(chan);
 	} else {
 		ast_log(LOG_DEBUG, "no extension found\n");
 		lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_CONGESTION_CODE);
