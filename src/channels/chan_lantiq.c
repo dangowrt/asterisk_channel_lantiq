@@ -155,7 +155,7 @@ static struct lantiq_ctx {
 
 static int ast_digit_begin(struct ast_channel *ast, char digit);
 static int ast_digit_end(struct ast_channel *ast, char digit, unsigned int duration);
-static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout);
+static int ast_lantiq_call(struct ast_channel *ast, const char *dest, int timeout);
 static int ast_lantiq_hangup(struct ast_channel *ast);
 static int ast_lantiq_answer(struct ast_channel *ast);
 static struct ast_frame *ast_lantiq_read(struct ast_channel *ast);
@@ -163,19 +163,18 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame);
 static struct ast_frame *ast_lantiq_exception(struct ast_channel *ast);
 static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen);
 static int ast_lantiq_fixup(struct ast_channel *old, struct ast_channel *new);
-static struct ast_channel *ast_lantiq_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause);
-static int ast_lantiq_devicestate(void *data);
+static struct ast_channel *ast_lantiq_requester(const char *type, struct ast_format_cap *cap, const struct ast_channel *requestor, const char *data, int *cause);
+static int ast_lantiq_devicestate(const char *data);
 static int acf_channel_read(struct ast_channel *chan, const char *funcname, char *args, char *buf, size_t buflen);
 static void lantiq_jb_get_stats(int c);
-static format_t lantiq_map_rtptype_to_format(uint8_t rtptype);
-static uint8_t lantiq_map_format_to_rtptype(format_t format);
-static int lantiq_conf_enc(int c, format_t formatid);
+static struct ast_format lantiq_map_rtptype_to_format(uint8_t rtptype);
+static uint8_t lantiq_map_format_to_rtptype(const struct ast_format *format);
+static int lantiq_conf_enc(int c, const struct ast_format *format);
 static void lantiq_reset_dtmfbuf(struct lantiq_pvt *pvt);
 
-static const struct ast_channel_tech lantiq_tech = {
+static struct ast_channel_tech lantiq_tech = {
 	.type = "TAPI",
 	.description = "Lantiq TAPI Telephony API Driver",
-	.capabilities = AST_FORMAT_ULAW | AST_FORMAT_ALAW | AST_FORMAT_G722 | AST_FORMAT_G726 | AST_FORMAT_SLINEAR,
 	.send_digit_begin = ast_digit_begin,
 	.send_digit_end = ast_digit_end,
 	.call = ast_lantiq_call,
@@ -200,9 +199,9 @@ AST_MUTEX_DEFINE_STATIC(iflock);
  */
 AST_MUTEX_DEFINE_STATIC(monlock);
 
-/* The scheduling thread */
-struct ast_sched_thread *sched_thread;
-   
+/* The scheduling context */
+struct ast_sched_context *sched;
+
 /*
  * This is the thread for the monitor which checks for input on the channels
  * which are not currently in use.
@@ -536,7 +535,7 @@ static const char *control_string(int c)
 
 static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen)
 {
-	struct lantiq_pvt *pvt = chan->tech_pvt;
+	struct lantiq_pvt *pvt = ast_channel_tech_pvt(chan);
 
 	ast_verb(3, "phone indication \"%s\"\n", control_string(condition));
 
@@ -590,7 +589,7 @@ static int ast_digit_end(struct ast_channel *ast, char digit, unsigned int durat
 	return 0;
 }
 
-static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
+static int ast_lantiq_call(struct ast_channel *ast, const char *dest, int timeout)
 {
 	int res = 0;
 	struct lantiq_pvt *pvt;
@@ -598,12 +597,13 @@ static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
 	/* lock to prevent simultaneous access with do_monitor thread processing */
 	ast_mutex_lock(&iflock);
 
-	pvt = ast->tech_pvt;
+	pvt = ast_channel_tech_pvt(ast);
 	ast_log(LOG_DEBUG, "state: %s\n", state_string(pvt->channel_state));
 
 	if (pvt->channel_state == ONHOOK) {
-		const char *cid = ast->connected.id.number.valid ? ast->connected.id.number.str : NULL;
-		const char *name = ast->connected.id.name.valid ? ast->connected.id.name.str : NULL;
+		struct ast_party_id connected_id = ast_channel_connected_effective_id(ast);
+		const char *cid = connected_id.number.valid ? connected_id.number.str : NULL;
+		const char *name = connected_id.name.valid ? connected_id.name.str : NULL;
 
 		ast_log(LOG_DEBUG, "port %i is ringing\n", pvt->port_id);
 		ast_log(LOG_DEBUG, "port %i CID: %s\n", pvt->port_id, cid ? cid : "none");
@@ -633,10 +633,10 @@ static int ast_lantiq_hangup(struct ast_channel *ast)
 	/* lock to prevent simultaneous access with do_monitor thread processing */
 	ast_mutex_lock(&iflock);
 
-	pvt = ast->tech_pvt;
+	pvt = ast_channel_tech_pvt(ast);
 	ast_log(LOG_DEBUG, "state: %s\n", state_string(pvt->channel_state));
 
-	if (ast->_state == AST_STATE_RINGING) {
+	if (ast_channel_state(ast) == AST_STATE_RINGING) {
 		ast_debug(1, "channel state is RINGING\n");
 	}
 
@@ -656,7 +656,7 @@ static int ast_lantiq_hangup(struct ast_channel *ast)
 
 	ast_setstate(ast, AST_STATE_DOWN);
 	ast_module_unref(ast_module_info->self);
-	ast->tech_pvt = NULL;
+	ast_channel_tech_pvt_set(ast, NULL);
 	pvt->owner = NULL;
 
 	ast_mutex_unlock(&iflock);
@@ -666,11 +666,11 @@ static int ast_lantiq_hangup(struct ast_channel *ast)
 
 static int ast_lantiq_answer(struct ast_channel *ast)
 {
-	struct lantiq_pvt *pvt = ast->tech_pvt;
+	struct lantiq_pvt *pvt = ast_channel_tech_pvt(ast);
 
 	ast_log(LOG_DEBUG, "Remote end has answered call.\n");
 
-	if (lantiq_conf_enc(pvt->port_id, ast->writeformat))
+	if (lantiq_conf_enc(pvt->port_id, ast_channel_writeformat(ast)))
 		return -1;
 
 	pvt->call_answer = epoch();
@@ -685,26 +685,26 @@ static struct ast_frame * ast_lantiq_read(struct ast_channel *ast)
 }
 
 /* create asterisk format from rtp payload type */
-static format_t lantiq_map_rtptype_to_format(uint8_t rtptype)
+static struct ast_format lantiq_map_rtptype_to_format(uint8_t rtptype)
 {
-	format_t format = {0};
+	struct ast_format format = {0};
 
 	switch (rtptype) {
-		case RTP_PCMU: format = AST_FORMAT_ULAW; break;
-		case RTP_PCMA: format = AST_FORMAT_ALAW; break;
-		case RTP_G722: format = AST_FORMAT_G722; break;
-		case RTP_G726: format = AST_FORMAT_G726; break;
-		case RTP_SLIN8: format = AST_FORMAT_SLINEAR; break;
-		case RTP_SLIN16: format = AST_FORMAT_SLINEAR16; break;
-		case RTP_ILBC: format = AST_FORMAT_ILBC; break;
-		case RTP_SIREN7: format = AST_FORMAT_SIREN7; break;
-		case RTP_G723_63: format = AST_FORMAT_G723_1; break;
-		case RTP_G723_53: format = AST_FORMAT_G723_1; break;
-		case RTP_G729: format = AST_FORMAT_G729A; break;
+		case RTP_PCMU: ast_format_set(&format, AST_FORMAT_ULAW, 0); break;
+		case RTP_PCMA: ast_format_set(&format, AST_FORMAT_ALAW, 0); break;
+		case RTP_G722: ast_format_set(&format, AST_FORMAT_G722, 0); break;
+		case RTP_G726: ast_format_set(&format, AST_FORMAT_G726, 0); break;
+		case RTP_SLIN8: ast_format_set(&format, AST_FORMAT_SLINEAR, 0); break;
+		case RTP_SLIN16: ast_format_set(&format, AST_FORMAT_SLINEAR16, 0); break;
+		case RTP_ILBC: ast_format_set(&format, AST_FORMAT_ILBC, 0); break;
+		case RTP_SIREN7: ast_format_set(&format, AST_FORMAT_SIREN7, 0); break;
+		case RTP_G723_63: ast_format_set(&format, AST_FORMAT_G723_1, 0); break;
+		case RTP_G723_53: ast_format_set(&format, AST_FORMAT_G723_1, 0); break;
+		case RTP_G729: ast_format_set(&format, AST_FORMAT_G729A, 0); break;
 		default:
 		{
 			ast_log(LOG_ERROR, "unsupported rtptype received is 0x%x, forcing ulaw\n", (unsigned) rtptype);
-			format = AST_FORMAT_ULAW;
+			ast_format_set(&format, AST_FORMAT_ULAW, 0);
 		}
 	}
 
@@ -712,11 +712,12 @@ static format_t lantiq_map_rtptype_to_format(uint8_t rtptype)
 }
 
 /* create rtp payload type from asterisk format */
-static uint8_t lantiq_map_format_to_rtptype(format_t format)
+static uint8_t lantiq_map_format_to_rtptype(const struct ast_format *format)
 {
 	uint8_t rtptype = 0;
+	enum ast_format_id formatid = format ? format->id : 0;
 
-	switch (format) {
+	switch (formatid) {
 		case AST_FORMAT_ULAW: rtptype = RTP_PCMU; break;
 		case AST_FORMAT_ALAW: rtptype = RTP_PCMA; break;
 		case AST_FORMAT_G722: rtptype = RTP_G722; break;
@@ -733,7 +734,7 @@ static uint8_t lantiq_map_format_to_rtptype(format_t format)
 		case AST_FORMAT_G729A: rtptype = RTP_G729; break;
 		default:
 		{
-			ast_log(LOG_ERROR, "unsupported format %s (0x%llx), forcing ulaw\n", ast_getformatname(format), (long long) format);
+			ast_log(LOG_ERROR, "unsupported format %s (0x%x), forcing ulaw\n", ast_getformatname(format), (int) formatid);
 			rtptype = RTP_PCMU;
 		}
 	}
@@ -741,10 +742,11 @@ static uint8_t lantiq_map_format_to_rtptype(format_t format)
 	return rtptype;
 }
 
-static int lantiq_conf_enc(int c, format_t formatid)
+static int lantiq_conf_enc(int c, const struct ast_format *format)
 {
 	/* Configure encoder before starting RTP session */
 	IFX_TAPI_ENC_CFG_t enc_cfg;
+	enum ast_format_id formatid = format ? format->id : 0;
 
 	memset(&enc_cfg, 0, sizeof(IFX_TAPI_ENC_CFG_t));
 	switch (formatid) {
@@ -804,13 +806,13 @@ static int lantiq_conf_enc(int c, format_t formatid)
 			 iflist[c].ptime = 10;
 			 break;
 		default:
-			ast_log(LOG_ERROR, "unsupported format %s (0x%llx)\n", ast_getformatname(formatid), (long long) formatid);
+			ast_log(LOG_ERROR, "unsupported format %s (0x%x)\n", ast_getformatname(format), (int) formatid);
 			enc_cfg.nEncType = IFX_TAPI_COD_TYPE_MLAW;
 			enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
 			iflist[c].ptime = 10;
 	}
 
-	ast_log(LOG_DEBUG, "Configuring encoder to use TAPI codec type %d (%s) on channel %i\n", enc_cfg.nEncType, ast_getformatname(formatid), c);
+	ast_log(LOG_DEBUG, "Configuring encoder to use TAPI codec type %d (%s) on channel %i\n", enc_cfg.nEncType, ast_getformatname(format), c);
 
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_CFG_SET, &enc_cfg)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_ENC_CFG_SET %d failed\n", c);
@@ -831,7 +833,7 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 {
 	char buf[RTP_BUFFER_LEN];
 	rtp_header_t *rtp_header = (rtp_header_t *) buf;
-	struct lantiq_pvt *pvt = ast->tech_pvt;
+	struct lantiq_pvt *pvt = ast_channel_tech_pvt(ast);
 	int ret;
 	uint8_t rtptype;
 	int subframes, subframes_rtp, length, samples;
@@ -848,7 +850,7 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 	}
 
 	/* get rtp payload type */
-	rtptype = lantiq_map_format_to_rtptype(frame->subclass.codec);
+	rtptype = lantiq_map_format_to_rtptype(&frame->subclass.format);
 
 	rtp_header->version      = 2;
 	rtp_header->padding      = 0;
@@ -908,14 +910,14 @@ static int acf_channel_read(struct ast_channel *chan, const char *funcname, char
 	struct lantiq_pvt *pvt;
 	int res = 0;
 
-	if (!chan || chan->tech != &lantiq_tech) {
+	if (!chan || ast_channel_tech(chan) != &lantiq_tech) {
 		ast_log(LOG_ERROR, "This function requires a valid Lantiq TAPI channel\n");
 		return -1;
 	}
 
 	ast_mutex_lock(&iflock);
 
-	pvt = (struct lantiq_pvt*) chan->tech_pvt;
+	pvt = (struct lantiq_pvt*) ast_channel_tech_pvt(chan);
 
 	if (!strcasecmp(args, "csd")) {
 		snprintf(buf, buflen, "%lu", (unsigned long int) pvt->call_setup_delay);
@@ -1017,7 +1019,7 @@ static int lantiq_end_dialing(int c)
 	ast_log(LOG_DEBUG, "end of dialing\n");
 
 	if (pvt->dial_timer != -1) {
-		ast_sched_thread_del(sched_thread, pvt->dial_timer);
+		AST_SCHED_DEL(sched, pvt->dial_timer);
 		pvt->dial_timer = -1;
 	}
 
@@ -1043,41 +1045,54 @@ static int lantiq_end_call(int c)
 	return 0;
 }
 
-static struct ast_channel *lantiq_channel(int state, int c, char *ext, char *ctx, format_t format)
+static struct ast_channel *lantiq_channel(int state, int c, char *ext, char *ctx, struct ast_format_cap *cap)
 {
 	struct ast_channel *chan = NULL;
 	struct lantiq_pvt *pvt = &iflist[c];
+	struct ast_format format = {0};
+	struct ast_format_cap *newcap = ast_format_cap_alloc();
+
+	if (!newcap) {
+		ast_log(LOG_DEBUG, "Cannot allocate format capabilities!\n");
+		return NULL;
+	}
 
 	chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx, 0, c, "TAPI/%d", (c + 1));
 	if (!chan) {
 		ast_log(LOG_DEBUG, "Cannot allocate channel!\n");
+		ast_format_cap_destroy(newcap);
 		return NULL;
 	}
 
-	chan->tech = &lantiq_tech;
-	chan->tech_pvt = pvt;
+	ast_channel_tech_set(chan, &lantiq_tech);
+	ast_channel_tech_pvt_set(chan, pvt);
 	pvt->owner = chan;
 
-	if (!(format & lantiq_tech.capabilities)) { /* no format or unsupported format given */
-		format = ast_best_codec(lantiq_tech.capabilities); /* choose format from capabilities */
+	if (cap && ast_format_cap_has_joint(cap, lantiq_tech.capabilities)) { /* compatible format capabilities given */
+		ast_format_cap_joint_copy(lantiq_tech.capabilities, cap, newcap);
+		ast_best_codec(newcap, &format); /* choose format */
+	} else { /* no or unsupported format capabilities given */
+		ast_best_codec(lantiq_tech.capabilities, &format); /* choose format from capabilities */
 	}
 
 	/* set choosed format */
-	chan->nativeformats = format;
-	chan->readformat = format;
-	chan->writeformat = format;
-	chan->rawreadformat = format;
-	chan->rawwriteformat = format;
+	ast_format_cap_set(ast_channel_nativeformats(chan), &format);
+	ast_format_copy(ast_channel_readformat(chan), &format);
+	ast_format_copy(ast_channel_writeformat(chan), &format);
+	ast_format_copy(ast_channel_rawreadformat(chan), &format);
+	ast_format_copy(ast_channel_rawwriteformat(chan), &format);
+
+	ast_format_cap_destroy(newcap);
 
 	/* configuring encoder */
-	if (format != 0)
-		if (lantiq_conf_enc(c, format) < 0)
+	if (format.id != 0)
+		if (lantiq_conf_enc(c, &format) < 0)
 			return NULL;
 
 	return chan;
 }
 
-static struct ast_channel *ast_lantiq_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause)
+static struct ast_channel *ast_lantiq_requester(const char *type, struct ast_format_cap *cap, const struct ast_channel *requestor, const char *data, int *cause)
 {
 	char buf[BUFSIZ];
 	struct ast_channel *chan = NULL;
@@ -1085,7 +1100,7 @@ static struct ast_channel *ast_lantiq_requester(const char *type, format_t forma
 
 	ast_mutex_lock(&iflock);
 
-	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_getformatname_multiple(buf, sizeof(buf), format));
+	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_getformatname_multiple(buf, sizeof(buf), cap));
 
 	/* check for correct data argument */
 	if (ast_strlen_zero(data)) {
@@ -1097,7 +1112,7 @@ static struct ast_channel *ast_lantiq_requester(const char *type, format_t forma
 	/* get our port number */
 	port_id = atoi((char*) data);
 	if (port_id < 1 || port_id > dev_ctx.channels) {
-		ast_log(LOG_ERROR, "Unknown channel ID: \"%s\"\n", (const char*) data);
+		ast_log(LOG_ERROR, "Unknown channel ID: \"%s\"\n", data);
 		*cause = AST_CAUSE_CHANNEL_UNACCEPTABLE;
 		goto bailout;
 	}
@@ -1114,7 +1129,7 @@ static struct ast_channel *ast_lantiq_requester(const char *type, format_t forma
 	if (! pvt->channel_state == ONHOOK) {
 		ast_debug(1, "TAPI channel %i alread in use.\n", port_id+1);
 	} else {
-		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, format);
+		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, cap);
 		ast_channel_unlock(chan);
 	}
 
@@ -1123,9 +1138,9 @@ bailout:
 	return chan;
 }
 
-static int ast_lantiq_devicestate(void *data)
+static int ast_lantiq_devicestate(const char *data)
 {
-	int port = atoi((char *) data) - 1;
+	int port = atoi(data) - 1;
 	if ((port < 1) || (port > dev_ctx.channels)) {
 		return AST_DEVICE_INVALID;
 	}
@@ -1150,7 +1165,7 @@ static int lantiq_dev_data_handler(int c)
 {
 	char buf[BUFSIZ];
 	struct ast_frame frame = {0};
-	format_t format;
+	struct ast_format format = {0};
 
 	int res = read(dev_ctx.ch_fd[c], buf, sizeof(buf));
 	if (res <= 0) {
@@ -1163,7 +1178,7 @@ static int lantiq_dev_data_handler(int c)
 
 	rtp_header_t *rtp = (rtp_header_t*) buf;
 	struct lantiq_pvt *pvt = (struct lantiq_pvt *) &iflist[c];
-	if ((!pvt->owner) || (pvt->owner->_state != AST_STATE_UP)) {
+	if ((!pvt->owner) || (ast_channel_state(pvt->owner) != AST_STATE_UP)) {
 		return 0;
 	}
 
@@ -1175,7 +1190,7 @@ static int lantiq_dev_data_handler(int c)
 	format = lantiq_map_rtptype_to_format(rtp->payload_type);
 	frame.src = "TAPI";
 	frame.frametype = AST_FRAME_VOICE;
-	frame.subclass.codec = format;
+	ast_format_copy(&frame.subclass.format, &format);
 	frame.datalen = res - RTP_HEADER_LEN;
 	frame.data.ptr = buf + RTP_HEADER_LEN;
 	frame.samples = ast_codec_get_samples(&frame);
@@ -1197,7 +1212,7 @@ static int accept_call(int c)
 	if (pvt->owner) {
 		struct ast_channel *chan = pvt->owner;
 
-		switch (chan->_state) {
+		switch (ast_channel_state(chan)) {
 			case AST_STATE_RINGING:
 				lantiq_play_tone(c, TAPI_TONE_LOCALE_NONE);
 				ast_queue_control(pvt->owner, AST_CONTROL_ANSWER);
@@ -1206,7 +1221,7 @@ static int accept_call(int c)
 				pvt->call_answer = pvt->call_start;
 				break;
 			default:
-				ast_log(LOG_WARNING, "entered unhandled state %s\n", ast_state2str(chan->_state));
+				ast_log(LOG_WARNING, "entered unhandled state %s\n", ast_state2str(ast_channel_state(chan)));
 		}
 	}
 
@@ -1284,12 +1299,12 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 
 		ast_verbose(VERBOSE_PREFIX_3 " extension exists, starting PBX %s\n", pvt->dtmfbuf);
 
-		chan = lantiq_channel(AST_STATE_UP, pvt->port_id, pvt->dtmfbuf, pvt->context, 0);
+		chan = lantiq_channel(AST_STATE_UP, pvt->port_id, pvt->dtmfbuf, pvt->context, NULL);
 		if (!chan) {
 			ast_log(LOG_ERROR, "couldn't create channel\n");
 			goto bailout;
 		}
-		chan->tech_pvt = pvt;
+		ast_channel_tech_pvt_set(chan, pvt);
 		pvt->owner = chan;
 
 		ast_setstate(chan, AST_STATE_RING);
@@ -1299,7 +1314,7 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 		pvt->call_start = epoch();
 
 		if (ast_pbx_start(chan)) {
-			ast_log(LOG_WARNING, " unable to start PBX on %s\n", chan->name);
+			ast_log(LOG_WARNING, " unable to start PBX on %s\n", ast_channel_name(chan));
 			ast_hangup(chan);
 		}
 
@@ -1380,12 +1395,10 @@ static void lantiq_dev_event_digit(int c, char digit)
 			/* setup autodial timer */
 			if (pvt->dial_timer == -1) {
 				ast_log(LOG_DEBUG, "setting new timer\n");
-				pvt->dial_timer = ast_sched_thread_add(sched_thread, dev_ctx.interdigit_timeout, lantiq_event_dial_timeout, (const void*) pvt);
+				pvt->dial_timer = ast_sched_add(sched, dev_ctx.interdigit_timeout, lantiq_event_dial_timeout, (const void*) pvt);
 			} else {
-				struct sched_context *sched_context = ast_sched_thread_get_context(sched_thread);
-
 				ast_log(LOG_DEBUG, "replacing timer\n");
-				AST_SCHED_REPLACE(pvt->dial_timer, sched_context, dev_ctx.interdigit_timeout, lantiq_event_dial_timeout, (const void*) pvt);
+				AST_SCHED_REPLACE(pvt->dial_timer, sched, dev_ctx.interdigit_timeout, lantiq_event_dial_timeout, (const void*) pvt);
 			}
 			break;
 		default:
@@ -1579,7 +1592,7 @@ static int unload_module(void)
 		ast_mutex_unlock(&monlock);
 	}
 
-	sched_thread = ast_sched_thread_destroy(sched_thread);
+	ast_sched_context_destroy(sched);
 	ast_mutex_destroy(&iflock);
 	ast_mutex_destroy(&monlock);
 
@@ -1691,6 +1704,19 @@ static int load_module(void)
 	dev_ctx.interdigit_timeout = DEFAULT_INTERDIGIT_TIMEOUT;
 	struct ast_flags config_flags = { 0 };
 	int c;
+	struct ast_format format;
+
+	if(!(lantiq_tech.capabilities = ast_format_cap_alloc())) {
+	  ast_log(LOG_ERROR, "Unable to allocate format capabilities.\n");
+	  return AST_MODULE_LOAD_DECLINE;
+	}
+
+	/* channel format capabilities */
+	ast_format_cap_add(lantiq_tech.capabilities, ast_format_set(&format, AST_FORMAT_ULAW, 0));
+	ast_format_cap_add(lantiq_tech.capabilities, ast_format_set(&format, AST_FORMAT_ALAW, 0));
+	ast_format_cap_add(lantiq_tech.capabilities, ast_format_set(&format, AST_FORMAT_G722, 0));
+	ast_format_cap_add(lantiq_tech.capabilities, ast_format_set(&format, AST_FORMAT_G726, 0));
+	ast_format_cap_add(lantiq_tech.capabilities, ast_format_set(&format, AST_FORMAT_SLINEAR, 0));
 
 	/* Turn off the LEDs, just in case */
 	led_off(dev_ctx.voip_led);
@@ -1872,9 +1898,14 @@ static int load_module(void)
 	ast_mutex_unlock(&iflock);
 	ast_config_destroy(cfg);
 
-	if (!(sched_thread = ast_sched_thread_create())) {
-		ast_log(LOG_ERROR, "Unable to create scheduler thread\n");
+	if (!(sched = ast_sched_context_create())) {
+		ast_log(LOG_ERROR, "Unable to create scheduler context\n");
 		goto load_error;
+	}
+
+	if (ast_sched_start_thread(sched)) {
+		ast_log(LOG_ERROR, "Unable to create scheduler context thread\n");
+		goto load_error_st;
 	}
 
 	if (ast_channel_register(&lantiq_tech)) {
@@ -2129,7 +2160,7 @@ cfg_error:
 	return AST_MODULE_LOAD_DECLINE;
 
 load_error_st:
-	sched_thread = ast_sched_thread_destroy(sched_thread);
+	ast_sched_context_destroy(sched);
 load_error:
 	unload_module();
 	ast_free(iflist);
