@@ -138,10 +138,9 @@ channels = 2
 ;
 ;
 ;
-;
 ; Timeout between dialed digits, in milliseconds, before placing the call.
 ;
-; interdigit = 2000
+;interdigit = 4000
 ;
 ;
 ;
