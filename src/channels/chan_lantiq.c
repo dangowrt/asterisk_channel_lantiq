@@ -71,6 +71,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #include <asterisk/utils.h>
 #include <asterisk/callerid.h>
 #include <asterisk/causes.h>
+#include <asterisk/indications.h>
 #include <asterisk/stringfields.h>
 #include <asterisk/musiconhold.h>
 #include <asterisk/sched.h>
@@ -108,6 +109,22 @@ static char firmware_filename[PATH_MAX] = "/lib/firmware/ifx_firmware.bin";
 static char bbd_filename[PATH_MAX] = "/lib/firmware/ifx_bbd_fxs.bin";
 static char base_path[PATH_MAX] = "/dev/vmmc";
 static int per_channel_context = 0;
+
+/* tone generator types */
+enum tone_generator_t {
+	TONE_INTEGRATED, /* tapi tone generator */
+	TONE_ASTERISK, /* asterisk tone generator where possible */
+	TONE_MEDIA /* media tone where possible */
+};
+
+/* tone generator (default is integraded) */
+static enum tone_generator_t tone_generator = TONE_INTEGRATED;
+
+/* tone zones for dial, ring, busy and congestion */
+struct ast_tone_zone_sound *ts_dial;
+struct ast_tone_zone_sound *ts_ring;
+struct ast_tone_zone_sound *ts_busy;
+struct ast_tone_zone_sound *ts_congestion;
 
 /*
  * The private structures of the Phone Jack channels are linked for selecting
@@ -390,6 +407,111 @@ static void lantiq_ring(int c, int r, const char *cid, const char *name)
 	}
 }
 
+/* add a frequency to TAPE tone structure */
+/* returns the TAPI frequency ID */
+static int tapitone_add_freq (IFX_TAPI_TONE_t *tone, IFX_uint32_t freq) {
+	const int n=4; /* TAPI tone structure supports up to 4 frequencies */
+	int error=0;
+	int ret;
+	int i;
+
+	/* pointer array for freq's A, B, C, D */
+	IFX_uint32_t *freqarr[] = { &(tone->simple.freqA), &(tone->simple.freqB), &(tone->simple.freqC), &(tone->simple.freqD) };
+
+	/* pointer array for level's A, B, C, D */
+	IFX_int32_t *lvlarr[] = { &(tone->simple.levelA), &(tone->simple.levelB), &(tone->simple.levelC), &(tone->simple.levelD) };
+
+	/* array for freq IDs */
+	IFX_uint32_t retarr[] = { IFX_TAPI_TONE_FREQA, IFX_TAPI_TONE_FREQB, IFX_TAPI_TONE_FREQC, IFX_TAPI_TONE_FREQD };
+
+	/* determine if freq already set */
+	for (i = 0; i < n; i++) {
+		if(*freqarr[i] == freq) /* freq found */
+			break;
+		else if (i == n-1) /* last iteration */
+			error=1; /* not found */
+	}
+
+	/* write frequency if not already set */
+	if(error) {
+		error=0; /* reset error flag */
+		/* since freq is not set, write it into first free place */
+		for (i = 0; i < n; i++) {
+			if(!*freqarr[i]) { /* free place */
+				*freqarr[i] = freq; /* set freq */
+				*lvlarr[i] = -150; /* set volume level */
+				break;
+			} else if (i == n-1) /* last iteration */
+				error=1; /* no free place becaus maximum count of freq's is set */
+		}
+	}
+
+	/* set freq ID return value */
+	if (!freq || error)
+		ret = IFX_TAPI_TONE_FREQNONE;
+	else
+		ret = retarr[i];
+
+	return ret; /* freq ID */
+}
+
+/* convert asterisk playlist string to tapi tone structure */
+/* based on ast_playtones_start() from indications.c of asterisk 13 */
+static void playlist_to_tapitone (const char *playlst, IFX_uint32_t index, IFX_TAPI_TONE_t *tone)
+{
+	char *s, *data = ast_strdupa(playlst);
+	char *stringp;
+	char *separator;
+	int i;
+
+	/* initialize tapi tone structure */
+	memset(tone, 0, sizeof(IFX_TAPI_TONE_t));
+	tone->simple.format = IFX_TAPI_TONE_TYPE_SIMPLE;
+	tone->simple.index = index;
+
+	stringp = data;
+
+	/* check if the data is separated with '|' or with ',' by default */
+	if (strchr(stringp,'|')) {
+		separator = "|";
+	} else {
+		separator = ",";
+	}
+
+	for ( i = 0; (s = strsep(&stringp, separator)) && !ast_strlen_zero(s) && i < IFX_TAPI_TONE_STEPS_MAX; i++) {
+		struct ast_tone_zone_part tone_data = {
+			.time = 0,
+		};
+
+		s = ast_strip(s);
+		if (s[0]=='!') {
+			s++;
+		}
+
+		if (ast_tone_zone_part_parse(s, &tone_data)) {
+			ast_log(LOG_ERROR, "Failed to parse tone part '%s'\n", s);
+			continue;
+		}
+
+		/* first tone must hava a cadence */
+		if (i==0 && !tone_data.time)
+			tone->simple.cadence[i] = 1000;
+		else
+			tone->simple.cadence[i] = tone_data.time;
+
+		/* check for modulation */
+		if (tone_data.modulate) {
+			tone->simple.modulation[i] = IFX_TAPI_TONE_MODULATION_ON;
+			tone->simple.modulation_factor = IFX_TAPI_TONE_MODULATION_FACTOR_90;
+		}
+
+		/* copy freq's to tapi tone structure */
+		/* a freq will implicitly skipped if it is zero  */
+		tone->simple.frequencies[i] |= tapitone_add_freq(tone, tone_data.freq1);
+		tone->simple.frequencies[i] |= tapitone_add_freq(tone, tone_data.freq2);
+	}
+}
+
 static int lantiq_play_tone(int c, int t)
 {
 	/* stop currently playing tone before starting new one */
@@ -548,19 +670,32 @@ static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const vo
 			}
 		case AST_CONTROL_CONGESTION:
 			{
-				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_CONGESTION_CODE);
+				if (tone_generator == TONE_INTEGRATED)
+					lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_CONGESTION_CODE);
+				else
+					ast_playtones_start(chan, 0, ts_congestion->data, 1);
+
 				return 0;
 			}
 		case AST_CONTROL_BUSY:
 			{
-				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
+				if (tone_generator == TONE_INTEGRATED)
+					lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
+				else
+					ast_playtones_start(chan, 0, ts_busy->data, 1);
+
 				return 0;
 			}
 		case AST_CONTROL_RINGING:
 		case AST_CONTROL_PROGRESS:
 			{
 				pvt->call_setup_delay = now() - pvt->call_setup_start;
-				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_RINGING_CODE);
+
+				if (tone_generator == TONE_INTEGRATED)
+					lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_RINGING_CODE);
+				else if (tone_generator == TONE_ASTERISK) /* do nothing if TONE_MEDIA is set */
+					ast_playtones_start(chan, 0, ts_ring->data, 1);
+
 				return 0;
 			}
 		default:
@@ -1702,6 +1837,7 @@ static int load_module(void)
 	dev_ctx.dev_fd = -1;
 	dev_ctx.channels = TAPI_AUDIO_PORT_NUM_MAX;
 	dev_ctx.interdigit_timeout = DEFAULT_INTERDIGIT_TIMEOUT;
+	struct ast_tone_zone *tz;
 	struct ast_flags config_flags = { 0 };
 	int c;
 
@@ -1889,6 +2025,17 @@ static int load_module(void)
 				dev_ctx.interdigit_timeout = DEFAULT_INTERDIGIT_TIMEOUT;
 				ast_log(LOG_WARNING, "Invalid interdigit timeout: %s, using default.\n", v->value);
 			}
+		} else if (!strcasecmp(v->name, "tone_generator")) {
+			if (!strcasecmp(v->value, "integrated")) {
+				tone_generator = TONE_INTEGRATED;
+			} else if (!strcasecmp(v->value, "asterisk")) {
+				tone_generator = TONE_ASTERISK;
+			} else if (!strcasecmp(v->value, "media")) {
+				tone_generator = TONE_MEDIA;
+			} else {
+				ast_log(LOG_ERROR, "Unknown tone_generator value '%s'. Try 'integrated', 'asterisk' or 'media'.\n", v->value);
+				goto cfg_error_il;
+			}
 		}
 	}
 
@@ -1960,6 +2107,23 @@ static int load_module(void)
 		goto load_error_st;
 	}
 
+	tz = ast_get_indication_zone(NULL);
+
+	if (!tz) {
+		ast_log(LOG_ERROR, "Unable to alloc tone zone\n");
+		goto load_error_st;
+	}
+
+	ts_dial = ast_get_indication_tone(tz, "dial");
+	ts_ring = ast_get_indication_tone(tz, "ring");
+	ts_busy = ast_get_indication_tone(tz, "busy");
+	ts_congestion = ast_get_indication_tone(tz, "congestion");
+
+	if (!ts_dial || !ts_dial->data || !ts_ring || !ts_ring->data || !ts_busy || !ts_busy->data || !ts_congestion || !ts_congestion->data) {
+		ast_log(LOG_ERROR, "Unable to get indication tones\n");
+		goto load_error_st;
+	}
+
 	for (c = 0; c < dev_ctx.channels ; c++) {
 		/* We're a FXS and want to switch between narrow & wide band automatically */
 		memset(&line_type, 0, sizeof(IFX_TAPI_LINE_TYPE_CFG_t));
@@ -1972,13 +2136,7 @@ static int load_module(void)
 		/* tones */
 		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
 		tone.simple.format = IFX_TAPI_TONE_TYPE_SIMPLE;
-		tone.simple.index = TAPI_TONE_LOCALE_DIAL_CODE;
-		tone.simple.freqA = 425;
-		tone.simple.levelA = -150;
-		tone.simple.cadence[0] = 1000;
-		tone.simple.frequencies[0] = IFX_TAPI_TONE_FREQA;
-		tone.simple.loop = 0;
-		tone.simple.pause = 0;
+		playlist_to_tapitone(ts_dial->data, TAPI_TONE_LOCALE_DIAL_CODE, &tone);
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
 			goto load_error_st;
@@ -1986,15 +2144,7 @@ static int load_module(void)
 
 		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
 		tone.simple.format = IFX_TAPI_TONE_TYPE_SIMPLE;
-		tone.simple.index = TAPI_TONE_LOCALE_RINGING_CODE;
-		tone.simple.freqA = 425;
-		tone.simple.levelA = -150;
-		tone.simple.cadence[0] = 1000;
-		tone.simple.cadence[1] = 4000;
-		tone.simple.frequencies[0] = IFX_TAPI_TONE_FREQA;
-		tone.simple.frequencies[1] = IFX_TAPI_TONE_FREQNONE;
-		tone.simple.loop = 0;
-		tone.simple.pause = 0;
+		playlist_to_tapitone(ts_ring->data, TAPI_TONE_LOCALE_RINGING_CODE, &tone);
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
 			goto load_error_st;
@@ -2002,15 +2152,7 @@ static int load_module(void)
 
 		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
 		tone.simple.format = IFX_TAPI_TONE_TYPE_SIMPLE;
-		tone.simple.index = TAPI_TONE_LOCALE_BUSY_CODE;
-		tone.simple.freqA = 425;
-		tone.simple.levelA = -150;
-		tone.simple.cadence[0] = 480;
-		tone.simple.cadence[1] = 480;
-		tone.simple.frequencies[0] = IFX_TAPI_TONE_FREQA;
-		tone.simple.frequencies[1] = IFX_TAPI_TONE_FREQNONE;
-		tone.simple.loop = 0;
-		tone.simple.pause = 0;
+		playlist_to_tapitone(ts_busy->data, TAPI_TONE_LOCALE_BUSY_CODE, &tone);
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
 			goto load_error_st;
@@ -2018,15 +2160,7 @@ static int load_module(void)
 
 		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
 		tone.simple.format = IFX_TAPI_TONE_TYPE_SIMPLE;
-		tone.simple.index = TAPI_TONE_LOCALE_CONGESTION_CODE;
-		tone.simple.freqA = 425;
-		tone.simple.levelA = -150;
-		tone.simple.cadence[0] = 240;
-		tone.simple.cadence[1] = 240;
-		tone.simple.frequencies[0] = IFX_TAPI_TONE_FREQA;
-		tone.simple.frequencies[1] = IFX_TAPI_TONE_FREQNONE;
-		tone.simple.loop = 0;
-		tone.simple.pause = 0;
+		playlist_to_tapitone(ts_congestion->data, TAPI_TONE_LOCALE_CONGESTION_CODE, &tone);
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
 			goto load_error_st;
