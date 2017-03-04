@@ -41,7 +41,7 @@
  * \author Mirko Vogt <mirko@openwrt.org>
  * \author Antonio Eugenio Burriel <aeburriel@gmail.com>
  * \author Stefan Koch <stefan.koch10@gmail.com>
- * 
+ *
  * \ingroup channel_drivers
  */
 
@@ -149,9 +149,9 @@ static struct lantiq_ctx {
 		int dev_fd;
 		int channels;
 		int ch_fd[TAPI_AUDIO_PORT_NUM_MAX];
-		char voip_led[LED_NAME_LENGTH];                        /* VOIP LED name */
+		char voip_led[LED_NAME_LENGTH]; /* VOIP LED name */
 		char ch_led[TAPI_AUDIO_PORT_NUM_MAX][LED_NAME_LENGTH]; /* FXS LED names */
-                int interdigit_timeout; /* Timeout in ms between dialed digits */
+		int interdigit_timeout; /* Timeout in ms between dialed digits */
 } dev_ctx;
 
 static int ast_digit_begin(struct ast_channel *ast, char digit);
@@ -643,7 +643,7 @@ static int ast_lantiq_hangup(struct ast_channel *ast)
 
 	switch (pvt->channel_state) {
 		case RINGING:
-		case ONHOOK: 
+		case ONHOOK:
 			lantiq_ring(pvt->port_id, 0, NULL, NULL);
 			pvt->channel_state = ONHOOK;
 			break;
@@ -965,11 +965,11 @@ static void lantiq_jb_get_stats(int c) {
 		ast_debug(1, "Error getting jitter buffer  stats.\n");
 	} else {
 #if !defined (TAPI_VERSION3) && defined (TAPI_VERSION4)
-		ast_debug(1, "Jitter buffer stats:  dev=%u, ch=%u, nType=%u, nBufSize=%u, nIsUnderflow=%u, nDsOverflow=%u, nPODelay=%u, nInvalid=%u\n", 
+		ast_debug(1, "Jitter buffer stats:  dev=%u, ch=%u, nType=%u, nBufSize=%u, nIsUnderflow=%u, nDsOverflow=%u, nPODelay=%u, nInvalid=%u\n",
 				(uint32_t) param.dev,
 				(uint32_t) param.ch,
 #else
-		ast_debug(1, "Jitter buffer stats:  nType=%u, nBufSize=%u, nIsUnderflow=%u, nDsOverflow=%u, nPODelay=%u, nInvalid=%u\n", 
+		ast_debug(1, "Jitter buffer stats:  nType=%u, nBufSize=%u, nIsUnderflow=%u, nDsOverflow=%u, nPODelay=%u, nInvalid=%u\n",
 #endif
 				(uint32_t) param.nType,
 				(uint32_t) param.nBufSize,
@@ -977,7 +977,7 @@ static void lantiq_jb_get_stats(int c) {
 				(uint32_t) param.nDsOverflow,
 				(uint32_t) param.nPODelay,
 				(uint32_t) param.nInvalid);
-		
+
 		pvt->jb_size = param.nBufSize;
 		pvt->jb_underflow = param.nIsUnderflow;
 		pvt->jb_overflow = param.nDsOverflow;
@@ -1032,7 +1032,7 @@ static int lantiq_end_call(int c)
 	struct lantiq_pvt *pvt = &iflist[c];
 
 	ast_log(LOG_DEBUG, "end of call\n");
-	
+
 	if(pvt->owner) {
 		lantiq_jb_get_stats(c);
 		ast_queue_hangup(pvt->owner);
@@ -1239,10 +1239,10 @@ static int lantiq_dev_event_hook(int c, int state)
 	int ret = -1;
 	if (state) { /* going onhook */
 		switch (iflist[c].channel_state) {
-			case DIALING: 
+			case DIALING:
 				ret = lantiq_end_dialing(c);
 				break;
-			case INCALL: 
+			case INCALL:
 				ret = lantiq_end_call(c);
 				break;
 		}
@@ -1260,7 +1260,7 @@ static int lantiq_dev_event_hook(int c, int state)
 		}
 
 		switch (iflist[c].channel_state) {
-			case RINGING: 
+			case RINGING:
 				ret = accept_call(c);
 				led_blink(dev_ctx.ch_led[c], LED_SLOW_BLINK);
 				break;
@@ -1324,7 +1324,7 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 		lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_CONGESTION_CODE);
 		pvt->channel_state = CALL_ENDED;
 	}
-	
+
 	lantiq_reset_dtmfbuf(pvt);
 bailout:
 	ast_mutex_unlock(&iflock);
@@ -1346,7 +1346,7 @@ static int lantiq_event_dial_timeout(const void* data)
 	return 0;
 }
 
-static int lantiq_send_digit(int c, char digit) 
+static int lantiq_send_digit(int c, char digit)
 {
 	struct lantiq_pvt *pvt = &iflist[c];
 
@@ -1373,14 +1373,14 @@ static void lantiq_dev_event_digit(int c, char digit)
 		case INCALL:
 			lantiq_send_digit(c, digit);
 			break;
-		case OFFHOOK:  
+		case OFFHOOK:
 			pvt->channel_state = DIALING;
 
 			lantiq_play_tone(c, TAPI_TONE_LOCALE_NONE);
 			led_blink(dev_ctx.ch_led[c], LED_SLOW_BLINK);
 
 			/* fall through */
-		case DIALING: 
+		case DIALING:
 			if (pvt->dtmfbuf_len < AST_MAX_EXTENSION - 1) {
 				pvt->dtmfbuf[pvt->dtmfbuf_len] = digit;
 				pvt->dtmfbuf[++pvt->dtmfbuf_len] = '\0';
@@ -1536,7 +1536,7 @@ static void lantiq_cleanup(void)
 		return;
 	}
 
-	for (c = 0; c < dev_ctx.channels ; c++) { 
+	for (c = 0; c < dev_ctx.channels ; c++) {
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
 			ast_log(LOG_WARNING, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
 		}
@@ -1911,7 +1911,7 @@ static int load_module(void)
 		ast_log(LOG_ERROR, "Unable to register channel class 'Phone'\n");
 		goto load_error_st;
 	}
-	
+
 	/* tapi */
 	IFX_TAPI_TONE_t tone;
 	IFX_TAPI_DEV_START_CFG_t dev_start;
@@ -2044,8 +2044,8 @@ static int load_module(void)
 
 		/* ring cadence */
 		IFX_char_t data[15] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-								0x00, 0x00, 0x00, 0x00, 0x00,     
-								0x00, 0x00, 0x00, 0x00, 0x00 };
+					0x00, 0x00, 0x00, 0x00, 0x00,
+					0x00, 0x00, 0x00, 0x00, 0x00 };
 
 		IFX_TAPI_RING_CADENCE_t ringCadence;
 		memset(&ringCadence, 0, sizeof(IFX_TAPI_RING_CADENCE_t));
@@ -2133,7 +2133,7 @@ static int load_module(void)
 
 		/* Set initial hook status */
 		iflist[c].channel_state = lantiq_get_hookstatus(c);
-		
+
 		if (iflist[c].channel_state == UNKNOWN) {
 			goto load_error_st;
 		}
