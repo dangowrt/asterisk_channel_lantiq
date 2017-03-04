@@ -144,4 +144,10 @@ channels = 2
 ;
 ;
 ;
+; Tone generator type (default: integrated)
+; integrated	Use tapi tone generator
+; asterisk	Use asterisk tone generator where possible
+; media		Use media tone where possible
+;
+;tone_generator = integrated
 ;
