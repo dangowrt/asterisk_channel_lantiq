@@ -1145,7 +1145,7 @@ static int lantiq_standby(int c)
 	return lantiq_play_tone(c, TAPI_TONE_LOCALE_NONE);
 }
 
-/* Note that lantiq_end_dial_timer() may only be called with mutex 'iflock' has been locked by caller */
+/* Note that lantiq_end_dial_timer() may only be called when mutex 'iflock' has been locked by caller */
 static void lantiq_end_dial_timer(struct lantiq_pvt *pvt)
 {
 	if (pvt->dial_timer == -1)
@@ -1435,7 +1435,7 @@ static void lantiq_reset_dtmfbuf(struct lantiq_pvt *pvt)
 	pvt->dtmfbuf_len = 0;
 }
 
-// Note that lantiq_dial() needs to be called with mutex 'iflock' locked
+/* Note that lantiq_end_dial_timer() may only be called when mutex 'iflock' has been locked by caller */
 static void lantiq_dial(struct lantiq_pvt *pvt)
 {
 	struct ast_channel *chan = NULL;
