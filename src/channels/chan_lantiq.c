@@ -1435,7 +1435,7 @@ static void lantiq_reset_dtmfbuf(struct lantiq_pvt *pvt)
 	pvt->dtmfbuf_len = 0;
 }
 
-/* Note that lantiq_end_dial_timer() may only be called when mutex 'iflock' has been locked by caller */
+/* Note that lantiq_dial() may only be called when mutex 'iflock' has been locked by caller */
 static void lantiq_dial(struct lantiq_pvt *pvt)
 {
 	struct ast_channel *chan = NULL;
