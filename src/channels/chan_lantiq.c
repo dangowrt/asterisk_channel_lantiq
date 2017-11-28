@@ -47,8 +47,6 @@
 
 #include "asterisk.h"
 
-ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
-
 #include <ctype.h>
 #include <sys/socket.h>
 #include <sys/time.h>
