@@ -582,7 +582,7 @@ on_exit:
 	if (fd != NULL)
 		fclose(fd);
 
-	if (*ppBuf != NULL && status)
+	if (status)
 		ast_free(*ppBuf);
 
 	return status;
@@ -608,8 +608,7 @@ static int32_t lantiq_dev_firmware_download(int32_t fd, const char *path)
 		return -1;
 	}
 
-	if (firmware != NULL)
-		ast_free(firmware);
+	ast_free(firmware);
 
 	return 0;
 }
