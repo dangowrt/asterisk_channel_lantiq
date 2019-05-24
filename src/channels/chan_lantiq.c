@@ -563,9 +563,9 @@ lantiq_dev_binary_buffer_create(const char *path, uint8_t **ppBuf, uint32_t *pBu
 		goto on_exit;
 	}
 
-	*ppBuf = malloc(file_stat.st_size);
+	*ppBuf = ast_malloc(file_stat.st_size);
 	if (*ppBuf == NULL) {
-		ast_log(LOG_ERROR, "binary file %s memory allocation failed\n", path);
+		// Message already logged by ast_malloc
 		goto on_exit;
 	}
 
@@ -582,8 +582,8 @@ on_exit:
 	if (fd != NULL)
 		fclose(fd);
 
-	if (*ppBuf != NULL && status)
-		free(*ppBuf);
+	if (status)
+		ast_free(*ppBuf);
 
 	return status;
 }
@@ -608,8 +608,7 @@ static int32_t lantiq_dev_firmware_download(int32_t fd, const char *path)
 		return -1;
 	}
 
-	if (firmware != NULL)
-		free(firmware);
+	ast_free(firmware);
 
 	return 0;
 }
