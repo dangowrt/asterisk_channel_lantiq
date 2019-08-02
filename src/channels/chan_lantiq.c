@@ -59,7 +59,6 @@
 #ifdef HAVE_LINUX_COMPILER_H
 #include <linux/compiler.h>
 #endif
-#include <linux/telephony.h>
 
 #include <asterisk/lock.h>
 #include <asterisk/channel.h>
