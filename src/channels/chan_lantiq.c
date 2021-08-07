@@ -1238,7 +1238,7 @@ static struct ast_channel *lantiq_channel(int state, int c, char *ext, char *ctx
 
 static struct ast_channel *ast_lantiq_requester(const char *type, struct ast_format_cap *cap, const struct ast_assigned_ids *assigned_ids, const struct ast_channel *requestor, const char *data, int *cause)
 {
-	struct ast_str *buf = ast_str_alloca(64);
+	struct ast_str *buf = ast_str_alloca(AST_FORMAT_CAP_NAMES_LEN);
 	struct ast_channel *chan = NULL;
 	int port_id = -1;
 
