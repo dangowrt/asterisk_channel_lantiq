@@ -814,8 +814,10 @@ static int ast_lantiq_answer(struct ast_channel *ast)
 
 static struct ast_frame * ast_lantiq_read(struct ast_channel *ast)
 {
+	struct ast_frame *frame = &ast_null_frame;
+
 	ast_log(LOG_DEBUG, "entering... no code here...\n");
-	return NULL;
+	return frame;
 }
 
 /* create asterisk format from rtp payload type */
@@ -1085,8 +1087,10 @@ static int acf_channel_read(struct ast_channel *chan, const char *funcname, char
 
 static struct ast_frame * ast_lantiq_exception(struct ast_channel *ast)
 {
+	struct ast_frame *frame = &ast_null_frame;
+
 	ast_log(LOG_DEBUG, "entering... no code here...\n");
-	return NULL;
+	return frame;
 }
 
 static void lantiq_jb_get_stats(int c) {
