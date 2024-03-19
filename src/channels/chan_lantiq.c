@@ -1572,6 +1572,17 @@ static void lantiq_dev_event_digit(int c, char digit)
 	return;
 }
 
+static void lantiq_dev_event_flash(int c)
+{
+	struct lantiq_pvt *pvt = &iflist[c];
+	if (!pvt->owner) {
+		ast_log(LOG_WARNING, "received hook flash event out of call\n");
+		return;
+	}
+
+	ast_queue_control(pvt->owner, AST_CONTROL_FLASH);
+}
+
 static void lantiq_dev_event_handler(void)
 {
 	IFX_TAPI_EVENT_t event;
@@ -1609,6 +1620,9 @@ static void lantiq_dev_event_handler(void)
 				} else {
 					lantiq_dev_event_digit(i, '0' + (char)event.data.pulse.digit);
 				}
+				break;
+			case IFX_TAPI_EVENT_FXS_FLASH:
+				lantiq_dev_event_flash(i);
 				break;
 			case IFX_TAPI_EVENT_COD_DEC_CHG:
 			case IFX_TAPI_EVENT_TONE_GEN_END:
