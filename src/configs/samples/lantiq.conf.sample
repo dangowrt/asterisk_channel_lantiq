@@ -143,6 +143,17 @@ channels = 2
 ;interdigit = 4000
 ;
 ;
+; Hook state machine timing
+;
+;digit_low_time_min = 30
+;digit_low_time_max = 80
+;digit_high_time_min = 30
+;digit_high_time_max = 80
+;flash_time_min = 80
+;flash_time_max = 200
+;hook_off_time = 40
+;hook_on_time = 400
+;
 ;
 ; When dialing, the user may not want to wait for the interdigit timeout to elapse
 ; after entering the last digit. Pressing the number sign key ("hash key", "pound key")
