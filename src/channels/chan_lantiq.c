@@ -141,7 +141,7 @@ enum channel_state {
 static struct lantiq_pvt {
 	struct ast_channel *owner;       /* Channel we belong to, possibly NULL   */
 	int port_id;                     /* Port number of this object, 0..n      */
-	int channel_state;
+	enum channel_state channel_state;/* Current state of the channel          */
 	char context[AST_MAX_CONTEXT];   /* this port's dialplan context          */
 	int dial_timer;                  /* timer handle for autodial timeout     */
 	char dtmfbuf[AST_MAX_EXTENSION]; /* buffer holding dialed digits          */
@@ -1392,6 +1392,8 @@ static int lantiq_dev_event_hook(int c, int state)
 				break;
 			case INCALL:
 				ret = lantiq_end_call(c);
+				break;
+			default:
 				break;
 		}
 
