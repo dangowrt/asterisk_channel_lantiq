@@ -1566,7 +1566,7 @@ static void lantiq_dev_event_digit(int c, char digit)
 			}
 			break;
 		default:
-			ast_log(LOG_ERROR, "don't know what to do in unhandled state\n");
+			ast_log(LOG_NOTICE, "don't know what to do in unhandled state %s\n", state_string(pvt->channel_state));
 			break;
 	}
 
