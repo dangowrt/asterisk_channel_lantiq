@@ -1275,6 +1275,7 @@ static struct ast_channel *ast_lantiq_requester(const char *type, struct ast_for
 	/* Bail out if channel is already in use */
 	struct lantiq_pvt *pvt = &iflist[port_id];
 	if (! pvt->channel_state == ONHOOK) {
+		*cause = AST_CAUSE_USER_BUSY;
 		ast_debug(1, "TAPI channel %i alread in use.\n", port_id+1);
 	} else {
 		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, cap, assigned_ids, requestor);
